@@ -8,8 +8,9 @@
 | Laravel package | Named connections, transport, normalized services and durable integration infrastructure | trianity/laravel-mautic |
 | Host domain | Contact model, identity verification, field ownership, CRM workflows and consent evidence | Host application |
 
-Only the connection foundation is implemented today. The rest of this document
-states design constraints for later milestones; it is not a feature list.
+The connection foundation and normalized contact reads are implemented today. The
+remaining sections state design constraints for later milestones; they are not a
+feature list.
 
 ## Current runtime
 
@@ -20,16 +21,25 @@ upstream BasicAuth with the PSR-18 transport from `HttpClientFactory`.
 `contacts()` returns upstream Contacts; `api(context)` is a low-level escape hatch.
 No outbound request occurs during registration, boot or connection construction.
 
+`contactReads()` returns the package-owned `ContactReader`. Its SDK adapter sends
+all responses through one normalization boundary and maps successful payloads to
+immutable DTOs. Contact lookup, bounded search and contact-specific segment
+membership reads are available. `OptionalValue` retains missing, explicit null and
+present-empty distinctions. Normalized exceptions contain classification and bounded
+metadata, never upstream messages or unrestricted response payloads. Read operations
+publish safety metadata but are not retried automatically. `FakeContactReader`
+provides the same contract for deterministic host tests.
+
 The factory contracts are the extension seam. Use composition around the SDK;
 do not subclass its endpoint classes or leak their arrays through future typed APIs.
 Raw access remains explicitly named/documented as an expert boundary.
 
-## Planned normalized APIs
+## Normalized API rules
 
-Contact reads and segment memberships should return immutable DTOs. Preserve
+Contact reads and segment memberships return immutable DTOs and preserve
 unknown/missing vs null vs empty values and pagination metadata. Define partial
-update semantics before introducing writes. Every response, including edits and
-batch items, must be checked for errors; HTTP success alone is insufficient.
+update semantics before introducing writes. Every future response, including edits
+and batch items, must be checked for errors; HTTP success alone is insufficient.
 Mautic documentation may lag behind code. Verify supported endpoints and payloads
 against the installed SDK and a target disposable Mautic instance.
 

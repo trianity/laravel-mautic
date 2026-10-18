@@ -5,9 +5,10 @@
 A model-independent Laravel integration built on the official `mautic/api-library`.
 MIT licensed; intended for publication as `trianity/laravel-mautic` on Packagist.
 
-**Status: development foundation, no stable release yet.** Basic Auth connections and
-raw upstream contexts are implemented. Typed contact services, OAuth2, webhooks,
-durable synchronization and reconciliation are planned, not available features.
+**Status: development package, no stable release yet.** Basic Auth connections,
+normalized contact reads and raw upstream contexts are implemented. Contact writes,
+OAuth2, webhooks, durable synchronization and reconciliation are planned, not
+available features.
 No real Mautic server compatibility is claimed until the integration milestone.
 
 ## Requirements
@@ -59,20 +60,54 @@ MAUTIC_PASSWORD=replace-with-a-dedicated-secret
 `allow_http` is an explicit opt-in in `config/mautic.php` for local development.
 Connections are created lazily, so an unconfigured package can boot without a request.
 
-## Retrieve a contact's segments
+## Normalized contact reads
 
 ```php
+use Trianity\LaravelMautic\Data\ValuePresence;
 use Trianity\LaravelMautic\MauticManager;
+use Trianity\LaravelMautic\Read\ContactSearch;
 
 $manager = app(MauticManager::class);
-$response = $manager->connection()->contacts()->getContactSegments($mauticContactId);
+$reads = $manager->connection()->contactReads();
 
-if (isset($response['errors'])) {
-    // Handle an API error explicitly; do not interpret it as an empty membership.
-    throw new RuntimeException('Mautic segment lookup failed.');
+$contact = $reads->find($mauticContactId);
+$email = $contact->field('email');
+if ($email->presence === ValuePresence::Value) {
+    $emailAddress = $email->value();
 }
 
-// Raw upstream payload; inspect/map it in your adapter.
+$page = $reads->search(new ContactSearch('email:person@example.com', offset: 0, limit: 25));
+// $page->contacts contains every match in this page; no match is selected implicitly.
+
+$memberships = $reads->segments($mauticContactId);
+// Successful empty membership is []; API failures throw MauticReadException instead.
+```
+
+`Contact`, `ContactPage` and `SegmentMemberships` are immutable package DTOs.
+`OptionalValue` distinguishes a missing property, an explicit `null`, and a present
+value (including `''` or `[]`) for contact fields, tags and DNC entries. Searches
+require an explicit offset and a limit from 1 to 100.
+
+Normalized failures expose a stable `ReadFailureKind`, connection name, operation
+and optional HTTP status without copying remote messages or contact payloads into the
+exception. Missing contacts use `ContactNotFound`; empty membership is successful.
+Every `ReadOperation` exposes side-effect and retry safety metadata, but the package
+does not retry automatically.
+
+For deterministic host tests, use `Fakes\FakeContactReader`, which implements the
+same `Contracts\ContactReader` interface and can configure contacts, searches,
+memberships and the next normalized failure.
+
+Before exposing reads to a subscriber, the host application must authorize access to
+the requested local contact and verify the local-to-remote identity. A remote ID,
+email address or segment membership is not proof of identity or authorization.
+
+## Raw SDK access
+
+Raw access remains available for expert integration work:
+
+```php
+$response = $manager->connection()->contacts()->getContactSegments($mauticContactId);
 ```
 
 An optional facade is available as `Trianity\LaravelMautic\Facades\Mautic`.
@@ -85,8 +120,8 @@ $segments = $connection->api('segments'); // raw upstream escape hatch
 ```
 
 **These are raw SDK contexts.** They retain upstream methods and response/error
-semantics, including write/delete methods. The foundation provides no normalized
-exceptions, automatic retry, idempotency or automatic model synchronization.
+semantics, including write/delete methods. Raw calls provide no normalized exceptions,
+automatic retry, idempotency or automatic model synchronization.
 Do not call raw mutations in a critical checkout path. Read the planned boundary in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 

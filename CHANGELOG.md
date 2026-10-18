@@ -10,6 +10,10 @@
 - Provider auto-discovery, publishable configuration and optional facade.
 - Pest/Testbench unit and feature tests with mocked HTTP, Pint and Larastan setup.
 - PHP 8.4/8.5 and Laravel 12/13 CI matrix and Codex implementation roadmap.
+- Immutable DTOs and a model-independent contract for contact lookup, bounded contact
+  search and contact-specific segment membership reads.
+- Normalized, payload-safe read failures with explicit operation safety metadata and
+  a deterministic `FakeContactReader` for host application tests.
 
-No stable release, Packagist publication, OAuth2, normalized contact service or
-bidirectional synchronization is included in this initialization.
+No stable release, Packagist publication, contact writes, OAuth2 or bidirectional
+synchronization is included.

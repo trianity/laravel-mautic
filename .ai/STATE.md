@@ -7,15 +7,17 @@
 - Validated configuration, finite request/connect timeouts, TLS verification,
   no redirects, no automatic retry, replaceable transport/connection factories.
 - Provider auto-discovery, publishable config, optional facade and raw SDK contexts.
+- Immutable normalized contact DTOs, bounded search and contact segment memberships.
+- Normalized read failures, read-operation safety metadata and deterministic read fake.
 - Pest unit/feature tests, Testbench, Pint, Larastan level 8, CI matrix.
 - Ordered implementation prompts and architecture/release/contribution guidance.
 
 ## Not implemented
 
-Typed DTO services, normalized response errors, contact writes with identity policy,
-OAuth2/token store, local mappings, outbox/inbox, webhook endpoint, reconciliation,
-consent workflows and live Mautic integration tests. No migrations or automatic
-model events exist. No release tag or Packagist publication exists.
+Contact writes with identity policy, OAuth2/token store, local mappings, outbox/inbox,
+webhook endpoint, reconciliation, consent workflows and live Mautic integration
+tests. No migrations or automatic model events exist. No release tag or Packagist
+publication exists.
 
 ## Verification
 
@@ -25,8 +27,30 @@ Tests exercise the real SDK with fake HTTP, not a real Mautic installation.
 
 ## Next task
 
-Run `prompts/00-resume.md` locally. Then implement `prompts/01-contact-reads.md`.
-The roadmap contains design gates; inspect before implementing later stages.
+Review and select the next milestone. `prompts/02-contact-writes.md` follows the
+roadmap order, while OAuth2 may be reordered by the owner. Inspect its design gates
+before implementation.
+
+## Contact reads — 2026-10-18
+
+Implemented `Contracts\ContactReader` through `MauticConnection::contactReads()` for
+remote-ID lookup, explicit offset/limit search and one contact's segment memberships.
+The immutable DTO boundary preserves missing, null and present-empty contact fields,
+tags and DNC values. Search returns all page matches without implicit selection.
+
+The shared SDK response boundary classifies authentication, validation, timeout,
+throttling, malformed response, unexpected shape, remote server and other transport
+failures. A missing contact is distinct from a successful empty membership. Public
+exceptions omit upstream messages and payloads. All read operations are declared
+side-effect-free and safe for an orchestrator to retry, but no automatic retry was
+added. `FakeContactReader` implements the same host-facing contract.
+
+Focused tests use the installed Mautic API library 4.0.0 with Guzzle MockHandler and
+also cover the fake. Local `composer check` passed with strict Composer validation,
+Pint, Larastan level 8 and 44 tests / 93 assertions. The local sandbox could not open
+PHPStan's loopback TCP server, so the same command was rerun successfully in the
+approved unrestricted environment. No live Mautic instance or production endpoint
+was called. The remote PHP/Laravel compatibility matrix was not rerun for this change.
 
 ## Initialization verification — 2026-10-18
 

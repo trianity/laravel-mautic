@@ -8,6 +8,9 @@ use Mautic\Api\Api;
 use Mautic\Api\Contacts;
 use Mautic\Auth\AuthInterface;
 use Mautic\MauticApi;
+use Trianity\LaravelMautic\Contracts\ContactReader;
+use Trianity\LaravelMautic\Support\SdkContactReader;
+use Trianity\LaravelMautic\Support\SdkResponseBoundary;
 
 final readonly class MauticConnection
 {
@@ -23,7 +26,13 @@ final readonly class MauticConnection
         return new Contacts($this->auth, $this->apiUrl);
     }
 
-    /** Low-level escape hatch. Normalized application services are planned. */
+    /** Package-owned, normalized contact and segment reads. */
+    public function contactReads(): ContactReader
+    {
+        return new SdkContactReader($this->contacts(), $this->name, new SdkResponseBoundary);
+    }
+
+    /** Low-level escape hatch outside the normalized service contract. */
     public function api(string $context): Api
     {
         return (new MauticApi)->newApi($context, $this->auth, $this->apiUrl);
