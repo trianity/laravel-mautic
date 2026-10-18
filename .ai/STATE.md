@@ -9,15 +9,17 @@
 - Provider auto-discovery, publishable config, optional facade and raw SDK contexts.
 - Immutable normalized contact DTOs, bounded search and contact segment memberships.
 - Normalized read failures, read-operation safety metadata and deterministic read fake.
+- Allowlisted contact creates, PATCH-only partial updates and checked batch writes.
+- Manual segment membership commands, mutation safety metadata and deterministic fake.
 - Pest unit/feature tests, Testbench, Pint, Larastan level 8, CI matrix.
 - Ordered implementation prompts and architecture/release/contribution guidance.
 
 ## Not implemented
 
-Contact writes with identity policy, OAuth2/token store, local mappings, outbox/inbox,
-webhook endpoint, reconciliation, consent workflows and live Mautic integration
-tests. No migrations or automatic model events exist. No release tag or Packagist
-publication exists.
+OAuth2/token store, local identity mappings, durable outbox/inbox, webhook endpoint,
+reconciliation, consent workflows and live Mautic integration tests. Remote deletion
+and general DNC removal are not exposed. No migrations or automatic model events
+exist. No release tag or Packagist publication exists.
 
 ## Verification
 
@@ -27,9 +29,33 @@ Tests exercise the real SDK with fake HTTP, not a real Mautic installation.
 
 ## Next task
 
-Review and select the next milestone. `prompts/02-contact-writes.md` follows the
-roadmap order, while OAuth2 may be reordered by the owner. Inspect its design gates
-before implementation.
+Review and select the next milestone. `prompts/03-oauth2.md` is next in roadmap order;
+model-independent identity mapping follows in `prompts/04-contact-identity.md`.
+Inspect the selected task's design gates before implementation.
+
+## Contact writes — 2026-10-18
+
+Implemented `Contracts\ContactWriter` through `MauticConnection::contactWrites()` for
+allowlisted contact creation, PATCH-only partial updates, create/update batches and
+manual segment add/remove commands. Omitted fields are absent from JSON while null,
+false, zero and empty strings are transmitted explicitly. IDs, tags, DNC and selected
+server-managed fields are outside generic writes.
+
+Updates never enable the SDK's PUT/create-if-missing branch. Creates with a non-empty
+email preflight existing matches and batch creates reject repeated emails before the
+write. This prevents known merges but not a concurrent read-before-write race. Each
+batch response item is normalized independently. Create transport loss is surfaced
+as an ambiguous outcome and no mutation is retried automatically.
+
+The segment commands use the installed SDK's manual membership endpoints and do not
+change consent, DNC, fields or mail state. Documentation records dynamic-filter lag,
+manual exclusions and the fact that REST creates do not execute form submit actions.
+No remote deletion, DNC removal, observer, queue or durable delivery mechanism was
+added. Local `composer check` passed with strict Composer validation, Pint, Larastan
+level 8 and 61 tests / 141 assertions. It ran in the approved unrestricted environment
+because PHPStan's loopback TCP server is unavailable in the local sandbox. No live
+Mautic instance or production endpoint was called, and the remote PHP/Laravel
+compatibility matrix was not rerun for this change.
 
 ## Contact reads — 2026-10-18
 

@@ -6,9 +6,9 @@ A model-independent Laravel integration built on the official `mautic/api-librar
 MIT licensed; intended for publication as `trianity/laravel-mautic` on Packagist.
 
 **Status: development package, no stable release yet.** Basic Auth connections,
-normalized contact reads and raw upstream contexts are implemented. Contact writes,
-OAuth2, webhooks, durable synchronization and reconciliation are planned, not
-available features.
+normalized contact reads, explicit contact writes, manual segment commands and raw
+upstream contexts are implemented. OAuth2, webhooks, durable synchronization and
+reconciliation are planned, not available features.
 No real Mautic server compatibility is claimed until the integration milestone.
 
 ## Requirements
@@ -101,6 +101,60 @@ memberships and the next normalized failure.
 Before exposing reads to a subscriber, the host application must authorize access to
 the requested local contact and verify the local-to-remote identity. A remote ID,
 email address or segment membership is not proof of identity or authorization.
+
+## Explicit contact writes
+
+```php
+use Trianity\LaravelMautic\Write\ContactFields;
+
+$writes = $manager->connection()->contactWrites();
+
+$contact = $writes->create(ContactFields::fromArray(
+    ['email' => 'person@example.com', 'firstname' => 'Ada'],
+    allowed: ['email', 'firstname'],
+));
+
+$contact = $writes->update($contact->remoteId, ContactFields::fromArray(
+    ['firstname' => 'Grace', 'company' => null],
+    allowed: ['firstname', 'company'],
+));
+
+$writes->addToSegment($contact->remoteId, $segmentId);
+$writes->removeFromSegment($contact->remoteId, $segmentId);
+```
+
+`ContactFields` accepts arrays only and rejects every key not present in the supplied
+host allowlist. Generic writes also reject IDs, tags, DNC and server-managed timestamp
+fields even if allowlisted. An omitted key is not sent. Explicit `null`, `false`, `0`
+and `''` values are retained in the JSON payload; whether a blank value clears a
+specific remote field still depends on that field and the target Mautic version.
+Never pass `Model::toArray()` as a field map.
+
+Updates always use SDK `edit(..., false)`, which is an HTTP PATCH. A missing target
+throws `ContactUpdateTargetNotFound`; it is never recreated with PUT. Single and
+batch creates perform an exact-email preflight when a non-empty email is present and
+throw `ContactAlreadyExists` for a known match. This prevents known Mautic email
+merges, but it is not an atomic uniqueness guarantee: a concurrent creator can race
+the preflight. Durable identity, idempotency and reconciliation belong to later
+milestones.
+
+Every batch item is checked for embedded errors. Mutations are side-effectful and
+not automatically retried. A timeout or connection loss during creation produces
+`AmbiguousMutationOutcome`: the remote contact may exist, so reconcile before any
+retry. The package deliberately provides no remote-delete or general DNC-removal API.
+
+Segment commands call only Mautic's manual add/remove endpoints. They do not change
+marketing consent, remove DNC, update contact fields or send mail. Filter-based
+segment membership is evaluated asynchronously and may lag field changes. Manual
+removal can create an exclusion even while the contact matches the filter; verify
+exclusion/re-add behavior against the target Mautic version before automating it.
+
+REST contact creation does not execute Mautic form submit actions such as campaign
+entry, notifications, attribution or form-specific consent handling. Keep an existing
+form submission path until each of those effects has been explicitly migrated.
+
+`Fakes\FakeContactWriter` implements `Contracts\ContactWriter` for deterministic host
+tests. No model observer, queue, durable outbox or automatic synchronization is added.
 
 ## Raw SDK access
 

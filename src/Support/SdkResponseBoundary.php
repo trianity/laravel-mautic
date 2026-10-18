@@ -4,10 +4,15 @@ declare(strict_types=1);
 
 namespace Trianity\LaravelMautic\Support;
 
+use Trianity\LaravelMautic\Exceptions\AmbiguousMutationOutcome;
 use Trianity\LaravelMautic\Exceptions\ContactNotFound;
+use Trianity\LaravelMautic\Exceptions\ContactUpdateTargetNotFound;
 use Trianity\LaravelMautic\Exceptions\MauticReadException;
+use Trianity\LaravelMautic\Exceptions\MauticWriteException;
 use Trianity\LaravelMautic\Read\ReadFailureKind;
 use Trianity\LaravelMautic\Read\ReadOperation;
+use Trianity\LaravelMautic\Write\FailureKind;
+use Trianity\LaravelMautic\Write\MutationOperation;
 
 final class SdkResponseBoundary
 {
@@ -31,6 +36,45 @@ final class SdkResponseBoundary
     public function unexpected(ReadOperation $operation, string $connection): never
     {
         throw new MauticReadException(ReadFailureKind::UnexpectedResponse, $operation, $connection);
+    }
+
+    /**
+     * @param  array<mixed>  $response
+     * @return array<string, mixed>
+     */
+    public function successfulWrite(
+        array $response,
+        MutationOperation $operation,
+        string $connection,
+        ?int $batchIndex = null,
+    ): array {
+        if (array_key_exists('errors', $response)) {
+            $this->throwWriteErrors($response['errors'], $operation, $connection, $batchIndex);
+        }
+
+        if (! $this->isStringKeyed($response)) {
+            throw new MauticWriteException(
+                FailureKind::UnexpectedResponse,
+                $operation,
+                $connection,
+                batchIndex: $batchIndex,
+            );
+        }
+
+        return $response;
+    }
+
+    public function unexpectedWrite(
+        MutationOperation $operation,
+        string $connection,
+        ?int $batchIndex = null,
+    ): never {
+        throw new MauticWriteException(
+            FailureKind::UnexpectedResponse,
+            $operation,
+            $connection,
+            batchIndex: $batchIndex,
+        );
     }
 
     private function throwErrors(mixed $errors, ReadOperation $operation, string $connection): never
@@ -60,6 +104,39 @@ final class SdkResponseBoundary
         );
     }
 
+    private function throwWriteErrors(
+        mixed $errors,
+        MutationOperation $operation,
+        string $connection,
+        ?int $batchIndex,
+    ): never {
+        if (! is_array($errors) || $errors === []) {
+            $this->unexpectedWrite($operation, $connection, $batchIndex);
+        }
+
+        $first = reset($errors);
+        if (! is_array($first)) {
+            $this->unexpectedWrite($operation, $connection, $batchIndex);
+        }
+
+        $status = $this->integer($first['code'] ?? null);
+        $message = is_string($first['message'] ?? null) ? $first['message'] : '';
+
+        if (in_array($operation, [MutationOperation::UpdateContact, MutationOperation::UpdateContactsBatch], true)
+            && $status === 404) {
+            throw new ContactUpdateTargetNotFound($connection, $operation, $batchIndex);
+        }
+
+        $kind = $this->writeKind($this->classify($status, $message));
+        if ($operation->safety()->ambiguousOnTransportFailure
+            && ($kind === FailureKind::Timeout
+                || ($kind === FailureKind::Transport && in_array($status, [null, 0], true)))) {
+            throw new AmbiguousMutationOutcome($operation, $connection, $batchIndex);
+        }
+
+        throw new MauticWriteException($kind, $operation, $connection, $status, $batchIndex);
+    }
+
     private function classify(?int $status, string $message): ReadFailureKind
     {
         if (str_contains($message, 'unexpected format')) {
@@ -75,8 +152,24 @@ final class SdkResponseBoundary
             400, 405, 409, 422 => ReadFailureKind::Validation,
             408, 504 => ReadFailureKind::Timeout,
             429 => ReadFailureKind::Throttled,
+            404 => ReadFailureKind::NotFound,
             500, 502, 503 => ReadFailureKind::RemoteServer,
             default => ReadFailureKind::Transport,
+        };
+    }
+
+    private function writeKind(ReadFailureKind $kind): FailureKind
+    {
+        return match ($kind) {
+            ReadFailureKind::Authentication => FailureKind::Authentication,
+            ReadFailureKind::Validation => FailureKind::Validation,
+            ReadFailureKind::Timeout => FailureKind::Timeout,
+            ReadFailureKind::Throttled => FailureKind::Throttled,
+            ReadFailureKind::MalformedResponse => FailureKind::MalformedResponse,
+            ReadFailureKind::UnexpectedResponse => FailureKind::UnexpectedResponse,
+            ReadFailureKind::RemoteServer => FailureKind::RemoteServer,
+            ReadFailureKind::Transport => FailureKind::Transport,
+            ReadFailureKind::NotFound => FailureKind::TargetNotFound,
         };
     }
 

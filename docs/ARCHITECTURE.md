@@ -8,9 +8,9 @@
 | Laravel package | Named connections, transport, normalized services and durable integration infrastructure | trianity/laravel-mautic |
 | Host domain | Contact model, identity verification, field ownership, CRM workflows and consent evidence | Host application |
 
-The connection foundation and normalized contact reads are implemented today. The
-remaining sections state design constraints for later milestones; they are not a
-feature list.
+The connection foundation, normalized contact reads, explicit partial writes and
+manual segment commands are implemented today. The remaining sections state design
+constraints for later milestones; they are not a feature list.
 
 ## Current runtime
 
@@ -30,6 +30,19 @@ metadata, never upstream messages or unrestricted response payloads. Read operat
 publish safety metadata but are not retried automatically. `FakeContactReader`
 provides the same contract for deterministic host tests.
 
+`contactWrites()` returns the package-owned `ContactWriter`. `ContactFields` rejects
+non-allowlisted and protected side-effect fields, while preserving explicit scalar,
+null and empty values. Updates use PATCH with create-if-missing disabled. Creation
+preflights non-empty email values because Mautic can merge duplicate-email creates;
+known matches and intra-batch duplicates are rejected. This read-before-write check
+does not eliminate concurrent races, so durable identity and reconciliation remain
+future work.
+
+The same response boundary classifies mutation failures and checks each batch item.
+All mutations publish non-retryable, side-effectful operation metadata. Transport
+loss during a create is an ambiguous outcome, not a safe retry. The deterministic
+`FakeContactWriter` implements the same contract.
+
 The factory contracts are the extension seam. Use composition around the SDK;
 do not subclass its endpoint classes or leak their arrays through future typed APIs.
 Raw access remains explicitly named/documented as an expert boundary.
@@ -37,9 +50,10 @@ Raw access remains explicitly named/documented as an expert boundary.
 ## Normalized API rules
 
 Contact reads and segment memberships return immutable DTOs and preserve
-unknown/missing vs null vs empty values and pagination metadata. Define partial
-update semantics before introducing writes. Every future response, including edits
-and batch items, must be checked for errors; HTTP success alone is insufficient.
+unknown/missing vs null vs empty values and pagination metadata. Partial writes send
+only explicit allowlisted keys and retain null/false/zero/empty-string payload values.
+Every response, including edits and batch items, is checked for errors; HTTP success
+alone is insufficient.
 Mautic documentation may lag behind code. Verify supported endpoints and payloads
 against the installed SDK and a target disposable Mautic instance.
 
@@ -62,6 +76,11 @@ Dynamic membership can lag the related field update. Distinguish static/manual
 membership commands from filter-based membership and test exclusions/re-addition.
 A DNC record, marketing consent and segment membership are different concepts.
 Generic updates must never imply renewed consent or remove DNC.
+
+The implemented segment commands use only manual add/remove endpoints. They do not
+change fields, consent, DNC or mail state. Dynamic filter evaluation is asynchronous;
+manual removal may be represented as an exclusion until explicitly re-added. Remote
+deletion and general DNC removal are not exposed.
 
 ## Reliable delivery (planned)
 
@@ -104,7 +123,7 @@ Do not force every consumer to use the fork or publish an unbounded dev dependen
 
 ## Existing form integration
 
-API contact creation does not automatically reproduce form submissions. Inventory
+API contact creation does not run or reproduce form submit actions. Inventory
 form submit actions, campaign entry, notifications, attribution, segmentation and
 consent handling before migrating a host. Initially add REST reads while retaining
 the host's existing write path. Avoid parallel writes that duplicate business effects.

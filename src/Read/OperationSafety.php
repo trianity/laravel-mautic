@@ -9,5 +9,6 @@ final readonly class OperationSafety
     public function __construct(
         public bool $sideEffectFree,
         public bool $mayRetry,
+        public bool $ambiguousOnTransportFailure = false,
     ) {}
 }

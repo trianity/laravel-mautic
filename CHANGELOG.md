@@ -14,6 +14,10 @@
   search and contact-specific segment membership reads.
 - Normalized, payload-safe read failures with explicit operation safety metadata and
   a deterministic `FakeContactReader` for host application tests.
+- Allowlisted contact creation, PATCH-only partial updates, checked batch mutations
+  and deterministic `FakeContactWriter` support.
+- Explicit manual segment add/remove commands, mutation safety metadata and ambiguous
+  create outcomes without automatic retries.
 
-No stable release, Packagist publication, contact writes, OAuth2 or bidirectional
-synchronization is included.
+No stable release, Packagist publication, OAuth2, durable synchronization, remote
+deletion or general DNC-removal API is included.

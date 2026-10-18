@@ -10,14 +10,17 @@ use Trianity\LaravelMautic\Data\DoNotContactEntry;
 use Trianity\LaravelMautic\Data\OptionalValue;
 use Trianity\LaravelMautic\Data\SegmentMembership;
 use Trianity\LaravelMautic\Exceptions\MauticReadException;
+use Trianity\LaravelMautic\Exceptions\MauticWriteException;
 use Trianity\LaravelMautic\Read\ReadFailureKind;
 use Trianity\LaravelMautic\Read\ReadOperation;
+use Trianity\LaravelMautic\Write\FailureKind;
+use Trianity\LaravelMautic\Write\MutationOperation;
 
 final class ContactResponseMapper
 {
     public function __construct(private readonly string $connection) {}
 
-    public function contact(mixed $payload, ReadOperation $operation): Contact
+    public function contact(mixed $payload, ReadOperation|MutationOperation $operation): Contact
     {
         if (! is_array($payload) || ! is_int($payload['id'] ?? null)) {
             $this->unexpected($operation);
@@ -32,7 +35,7 @@ final class ContactResponseMapper
     }
 
     /** @return list<SegmentMembership> */
-    public function segments(mixed $payload, ReadOperation $operation): array
+    public function segments(mixed $payload, ReadOperation|MutationOperation $operation): array
     {
         if (! is_array($payload)) {
             $this->unexpected($operation);
@@ -61,7 +64,7 @@ final class ContactResponseMapper
      * @param  array<mixed>  $contact
      * @return OptionalValue<array<string, OptionalValue<mixed>>>
      */
-    private function fields(array $contact, ReadOperation $operation): OptionalValue
+    private function fields(array $contact, ReadOperation|MutationOperation $operation): OptionalValue
     {
         if (! array_key_exists('fields', $contact)) {
             return OptionalValue::missing();
@@ -100,7 +103,7 @@ final class ContactResponseMapper
      * @param  array<mixed>  $contact
      * @return OptionalValue<list<ContactTag>>
      */
-    private function tags(array $contact, ReadOperation $operation): OptionalValue
+    private function tags(array $contact, ReadOperation|MutationOperation $operation): OptionalValue
     {
         if (! array_key_exists('tags', $contact)) {
             return OptionalValue::missing();
@@ -136,7 +139,7 @@ final class ContactResponseMapper
      * @param  array<mixed>  $contact
      * @return OptionalValue<list<DoNotContactEntry>>
      */
-    private function doNotContact(array $contact, ReadOperation $operation): OptionalValue
+    private function doNotContact(array $contact, ReadOperation|MutationOperation $operation): OptionalValue
     {
         if (! array_key_exists('doNotContact', $contact)) {
             return OptionalValue::missing();
@@ -173,7 +176,7 @@ final class ContactResponseMapper
      * @param  array<mixed>  $entry
      * @return OptionalValue<int|string>
      */
-    private function optionalReason(array $entry, ReadOperation $operation): OptionalValue
+    private function optionalReason(array $entry, ReadOperation|MutationOperation $operation): OptionalValue
     {
         if (! array_key_exists('reason', $entry)) {
             return OptionalValue::missing();
@@ -194,7 +197,7 @@ final class ContactResponseMapper
      * @param  array<mixed>  $entry
      * @return OptionalValue<string>
      */
-    private function optionalComments(array $entry, ReadOperation $operation): OptionalValue
+    private function optionalComments(array $entry, ReadOperation|MutationOperation $operation): OptionalValue
     {
         if (! array_key_exists('comments', $entry)) {
             return OptionalValue::missing();
@@ -211,8 +214,12 @@ final class ContactResponseMapper
         return OptionalValue::present($entry['comments']);
     }
 
-    private function unexpected(ReadOperation $operation): never
+    private function unexpected(ReadOperation|MutationOperation $operation): never
     {
+        if ($operation instanceof MutationOperation) {
+            throw new MauticWriteException(FailureKind::UnexpectedResponse, $operation, $this->connection);
+        }
+
         throw new MauticReadException(ReadFailureKind::UnexpectedResponse, $operation, $this->connection);
     }
 }
