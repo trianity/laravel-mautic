@@ -1,0 +1,54 @@
+{
+    "$schema": "https://getcomposer.org/schema.json",
+    "name": "trianity/laravel-mautic",
+    "description": "Explicit, model-independent Laravel integration for the Mautic REST API.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["laravel", "mautic", "crm", "api", "contacts"],
+    "homepage": "https://github.com/trianity/laravel-mautic",
+    "authors": [{"name": "Istvan Holbok", "homepage": "https://github.com/trianity"}],
+    "support": {
+        "issues": "https://github.com/trianity/laravel-mautic/issues",
+        "source": "https://github.com/trianity/laravel-mautic"
+    },
+    "require": {
+        "php": "^8.4",
+        "guzzlehttp/guzzle": "^7.9",
+        "illuminate/contracts": "^12.0 || ^13.0",
+        "illuminate/support": "^12.0 || ^13.0",
+        "mautic/api-library": "^4.0",
+        "psr/http-client": "^1.0"
+    },
+    "require-dev": {
+        "larastan/larastan": "^3.0",
+        "laravel/pint": "^1.0",
+        "orchestra/testbench": "^10.0 || ^11.0",
+        "pestphp/pest": "^4.4 || ^5.0",
+        "phpstan/phpstan": "^2.1"
+    },
+    "autoload": {
+        "psr-4": {"Trianity\\LaravelMautic\\": "src/"}
+    },
+    "autoload-dev": {
+        "psr-4": {"Trianity\\LaravelMautic\\Tests\\": "tests/"}
+    },
+    "extra": {
+        "laravel": {
+            "providers": ["Trianity\\LaravelMautic\\MauticServiceProvider"]
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "preferred-install": "dist",
+        "allow-plugins": {"pestphp/pest-plugin": true, "php-http/discovery": true}
+    },
+    "scripts": {
+        "test": "pest",
+        "format": "pint",
+        "format:check": "pint --test",
+        "analyse": "phpstan analyse --memory-limit=1G",
+        "check": ["@composer validate --strict", "@format:check", "@analyse", "@test"]
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}

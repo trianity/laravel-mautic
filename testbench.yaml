@@ -1,0 +1,2 @@
+providers:
+  - Trianity\LaravelMautic\MauticServiceProvider

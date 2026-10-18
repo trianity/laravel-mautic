@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }} / Pest ${{ matrix.pest }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {php: '8.4', laravel: '12', testbench: '10', pest: '4'}
+          - {php: '8.5', laravel: '12', testbench: '10', pest: '4'}
+          - {php: '8.4', laravel: '13', testbench: '11', pest: '5'}
+          - {php: '8.5', laravel: '13', testbench: '11', pest: '5'}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: curl, dom, mbstring, sqlite3, pdo_sqlite, xml, xmlwriter
+          coverage: none
+          tools: composer:v2
+      - name: Select compatible test dependencies
+        run: >-
+          composer require --dev --no-update
+          "laravel/framework:^${{ matrix.laravel }}.0"
+          "orchestra/testbench:^${{ matrix.testbench }}.0"
+          "pestphp/pest:^${{ matrix.pest }}.0"
+      - run: composer update --prefer-dist --no-interaction --no-progress
+      - run: composer validate --strict
+      - run: composer test
+
+  quality:
+    name: Pint and Larastan (PHP 8.5 / Laravel 13)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          extensions: curl, dom, mbstring, sqlite3, pdo_sqlite, xml, xmlwriter
+          coverage: none
+          tools: composer:v2
+      - run: composer update --prefer-dist --no-interaction --no-progress
+      - run: composer validate --strict
+      - name: Check formatting
+        run: |
+          vendor/bin/pint
+          git diff --exit-code
+      - run: composer analyse
