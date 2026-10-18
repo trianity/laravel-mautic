@@ -42,7 +42,7 @@ final readonly class ConnectionConfig
             throw new InvalidConfiguration('Mautic requires HTTPS. Local HTTP must be explicitly enabled.');
         }
 
-        if (! is_array($parts) || isset($parts['user']) || isset($parts['pass']) || isset($parts['query']) || isset($parts['fragment'])) {
+        if (isset($parts['user']) || isset($parts['pass']) || isset($parts['query']) || isset($parts['fragment'])) {
             throw new InvalidConfiguration('Mautic URLs cannot contain credentials, a query or a fragment.');
         }
 
