@@ -17,6 +17,7 @@ use Trianity\LaravelMautic\Exceptions\ContactAlreadyExists;
 use Trianity\LaravelMautic\Exceptions\ContactUpdateTargetNotFound;
 use Trianity\LaravelMautic\Exceptions\MauticWriteException;
 use Trianity\LaravelMautic\MauticManager;
+use Trianity\LaravelMautic\Write\BatchItemOutcome;
 use Trianity\LaravelMautic\Write\ContactFields;
 use Trianity\LaravelMautic\Write\ContactUpdate;
 use Trianity\LaravelMautic\Write\FailureKind;
@@ -96,16 +97,61 @@ it('uses POST for creation, PATCH without create-if-missing for updates, and pre
         ->and((string) $history[4]['request']->getBody())->toBe('[]');
 });
 
-it('rejects a known duplicate before Mautic can merge it', function () {
+it('rejects an exact normalized duplicate before Mautic can merge it', function () {
     $history = [];
     useContactWriteResponses([
-        new Response(200, ['Content-Type' => 'application/json'], '{"total":1,"contacts":{"7":{"id":7}}}'),
+        new Response(200, ['Content-Type' => 'application/json'], json_encode([
+            'total' => 2,
+            'contacts' => [
+                ['id' => 7, 'fields' => ['all' => ['email' => 'similar@example.test']]],
+            ],
+        ], JSON_THROW_ON_ERROR)),
+        new Response(200, ['Content-Type' => 'application/json'], json_encode([
+            'total' => 2,
+            'contacts' => [
+                ['id' => 8, 'fields' => ['all' => ['email' => ' Duplicate+tag@example.test ']]],
+            ],
+        ], JSON_THROW_ON_ERROR)),
     ], $history);
 
     expect(fn () => app(MauticManager::class)->connection()->contactWrites()->create(
-        ContactFields::fromArray(['email' => 'duplicate@example.test'], ['email']),
+        ContactFields::fromArray(['email' => 'duplicate+tag@example.test'], ['email']),
     ))->toThrow(ContactAlreadyExists::class)
-        ->and($history)->toHaveCount(1);
+        ->and($history)->toHaveCount(2);
+
+    parse_str($history[0]['request']->getUri()->getQuery(), $query);
+    expect($query['where'][0])->toBe([
+        'col' => 'email',
+        'expr' => 'eq',
+        'val' => 'duplicate+tag@example.test',
+    ])->and($query)->not->toHaveKey('start')
+        ->and($query['limit'])->toBe('100');
+
+    parse_str($history[1]['request']->getUri()->getQuery(), $secondQuery);
+    expect($secondQuery['start'])->toBe('1');
+});
+
+it('does not treat a similar search result as a duplicate', function () {
+    $history = [];
+    useContactWriteResponses([
+        new Response(200, ['Content-Type' => 'application/json'], json_encode([
+            'total' => 1,
+            'contacts' => [
+                ['id' => 7, 'fields' => ['all' => ['email' => 'person+other@example.test']]],
+            ],
+        ], JSON_THROW_ON_ERROR)),
+        new Response(201, ['Content-Type' => 'application/json'], contactJson(42, [
+            'email' => 'person+tag@example.test',
+        ])),
+    ], $history);
+
+    $contact = app(MauticManager::class)->connection()->contactWrites()->create(
+        ContactFields::fromArray(['email' => 'person+tag@example.test'], ['email']),
+    );
+
+    expect($contact->remoteId)->toBe(42)
+        ->and($history)->toHaveCount(2)
+        ->and($history[1]['request']->getMethod())->toBe('POST');
 });
 
 it('does not create on a missing PATCH target', function () {
@@ -157,27 +203,60 @@ it('surfaces a connection loss during create as ambiguous and does not retry', f
     })->and($history)->toHaveCount(2);
 });
 
-it('checks errors inside every batch response item', function () {
+it('normalizes Mautic indexed mixed batch outcomes without discarding successful IDs', function () {
     useContactWriteResponses([
         new Response(200, ['Content-Type' => 'application/json'], json_encode([
             'contacts' => [
-                ['id' => 10, 'fields' => ['all' => ['firstname' => 'Ada']]],
-                ['errors' => [['code' => 422, 'message' => 'private payload invalid']]],
+                0 => ['id' => 10, 'fields' => ['all' => ['firstname' => 'Ada']]],
+                2 => ['id' => 12, 'fields' => ['all' => ['firstname' => 'Lin']]],
             ],
+            'statusCodes' => [0 => 201, 1 => 422, 2 => 201],
+            'errors' => [1 => ['code' => 422, 'message' => 'private payload invalid']],
         ], JSON_THROW_ON_ERROR)),
     ]);
 
-    try {
-        app(MauticManager::class)->connection()->contactWrites()->createBatch(
-            ContactFields::fromArray(['firstname' => 'Ada'], ['firstname']),
-            ContactFields::fromArray(['firstname' => 'Grace'], ['firstname']),
-        );
-        test()->fail('Expected the second batch item to fail.');
-    } catch (MauticWriteException $exception) {
-        expect($exception->kind)->toBe(FailureKind::Validation)
-            ->and($exception->batchIndex)->toBe(1)
-            ->and($exception->getMessage())->not->toContain('private payload');
-    }
+    $result = app(MauticManager::class)->connection()->contactWrites()->createBatch(
+        ContactFields::fromArray(['firstname' => 'Ada'], ['firstname']),
+        ContactFields::fromArray(['firstname' => 'Grace'], ['firstname']),
+        ContactFields::fromArray(['firstname' => 'Lin'], ['firstname']),
+    );
+
+    expect($result->items)->toHaveCount(3)
+        ->and($result->items[0]->requestIndex)->toBe(0)
+        ->and($result->items[0]->outcome)->toBe(BatchItemOutcome::Successful)
+        ->and($result->items[0]->contact?->remoteId)->toBe(10)
+        ->and($result->items[1]->requestIndex)->toBe(1)
+        ->and($result->items[1]->outcome)->toBe(BatchItemOutcome::Failed)
+        ->and($result->items[1]->failureKind)->toBe(FailureKind::Validation)
+        ->and($result->items[1]->httpStatus)->toBe(422)
+        ->and($result->items[2]->contact?->remoteId)->toBe(12)
+        ->and(array_map(fn ($contact) => $contact->remoteId, $result->contacts))->toBe([10, 12]);
+});
+
+it('classifies missing targets and incomplete or malformed batch items by original index', function () {
+    useContactWriteResponses([
+        new Response(200, ['Content-Type' => 'application/json'], json_encode([
+            'contacts' => [
+                0 => ['id' => 10, 'fields' => ['all' => ['firstname' => 'Ada']]],
+                2 => ['id' => 'malformed'],
+            ],
+            'statusCodes' => [0 => 200, 1 => 404, 2 => 200],
+            'errors' => [1 => ['code' => 404, 'message' => 'missing']],
+        ], JSON_THROW_ON_ERROR)),
+    ]);
+
+    $result = app(MauticManager::class)->connection()->contactWrites()->updateBatch(
+        new ContactUpdate(10, ContactFields::fromArray(['firstname' => 'Ada'], ['firstname'])),
+        new ContactUpdate(11, ContactFields::fromArray(['firstname' => 'Grace'], ['firstname'])),
+        new ContactUpdate(12, ContactFields::fromArray(['firstname' => 'Lin'], ['firstname'])),
+        new ContactUpdate(13, ContactFields::fromArray(['firstname' => 'Edsger'], ['firstname'])),
+    );
+
+    expect($result->items[0]->outcome)->toBe(BatchItemOutcome::Successful)
+        ->and($result->items[1]->outcome)->toBe(BatchItemOutcome::Failed)
+        ->and($result->items[1]->failureKind)->toBe(FailureKind::TargetNotFound)
+        ->and($result->items[2]->outcome)->toBe(BatchItemOutcome::Unknown)
+        ->and($result->items[3]->outcome)->toBe(BatchItemOutcome::Unknown);
 });
 
 it('uses PATCH for batch updates and checks every returned item', function () {
@@ -188,6 +267,7 @@ it('uses PATCH for batch updates and checks every returned item', function () {
                 ['id' => 10, 'fields' => ['all' => ['firstname' => 'Ada']]],
                 ['id' => 11, 'fields' => ['all' => ['firstname' => 'Grace']]],
             ],
+            'statusCodes' => [200, 200],
         ], JSON_THROW_ON_ERROR)),
     ], $history);
 

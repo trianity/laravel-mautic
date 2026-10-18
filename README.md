@@ -138,10 +138,25 @@ merges, but it is not an atomic uniqueness guarantee: a concurrent creator can r
 the preflight. Durable identity, idempotency and reconciliation belong to later
 milestones.
 
-Every batch item is checked for embedded errors. Mutations are side-effectful and
-not automatically retried. A timeout or connection loss during creation produces
-`AmbiguousMutationOutcome`: the remote contact may exist, so reconcile before any
-retry. The package deliberately provides no remote-delete or general DNC-removal API.
+Batch writes return a `ContactBatch` whose `items` retain each original request index.
+Each item is explicitly `successful`, `failed` or `unknown`, with a successful
+`Contact`, or a normalized failure kind and optional HTTP status. The convenience
+`contacts` property contains all successful contacts even when another item failed.
+Mautic batches are not atomic: inspect every item, reconcile unknown outcomes and do
+not retry the whole batch automatically after partial success.
+
+Duplicate preflights use Mautic's structured `email eq` filter instead of search
+text, page through the complete result, and compare the returned email value after
+trimming surrounding whitespace and ASCII case-folding. Search result counts alone
+never establish a duplicate, so a similar address or wildcard-like character such
+as `+`, `%` or `_` does not block creation unless a returned email normalizes to the
+same value. The structured SDK query transports the email as a parameter rather than
+interpolating it into Mautic's search-command grammar.
+
+Mutations are side-effectful and not automatically retried. A timeout or connection
+loss during creation produces `AmbiguousMutationOutcome`: the remote contact may
+exist, so reconcile before any retry. The package deliberately provides no
+remote-delete or general DNC-removal API.
 
 Segment commands call only Mautic's manual add/remove endpoints. They do not change
 marketing consent, remove DNC, update contact fields or send mail. Filter-based

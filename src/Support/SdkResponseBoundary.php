@@ -77,6 +77,16 @@ final class SdkResponseBoundary
         );
     }
 
+    public function writeFailureKind(?int $status, string $message = ''): FailureKind
+    {
+        return $this->writeKind($this->classify($status, $message));
+    }
+
+    public function statusCode(mixed $value): ?int
+    {
+        return $this->integer($value);
+    }
+
     private function throwErrors(mixed $errors, ReadOperation $operation, string $connection): never
     {
         if (! is_array($errors) || $errors === []) {

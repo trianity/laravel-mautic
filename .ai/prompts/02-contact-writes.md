@@ -25,3 +25,38 @@ Acceptance criteria:
 
 Document that API creation does not run form submit actions. Keep host migration
 out of scope. No model observers, durable jobs or token lifecycle yet.
+
+===
+
+Review and correct Task 02 before starting OAuth2.
+
+Read AGENTS.md, .ai/STATE.md and docs/ARCHITECTURE.md.
+Inspect the installed Mautic SDK and Mautic 7.2.1 server source.
+Use Pest TDD and preserve PHP 8.4 / Laravel 12 compatibility.
+
+1. Correct batch response handling.
+   Mautic returns contacts, statusCodes and indexed errors separately.
+   Preserve original request indexes and classify every item.
+   Expose successful, failed and unknown item outcomes through a typed
+   result or a batch exception carrying the complete normalized result.
+   Do not discard successful remote IDs when another item fails.
+   Never imply atomicity or automatically retry a partially successful batch.
+   Keep the fake consistent with the public contract.
+
+2. Correct duplicate-email detection.
+   Use verified exact-search semantics and compare returned email values
+   using a documented normalization policy.
+   Do not infer duplication solely from the search result count.
+   Handle query escaping, wildcard characters and pagination correctly.
+   Retain the documented concurrent-create race limitation.
+
+Add regression tests using the real SDK with fake HTTP:
+- mixed-success responses matching Mautic's actual batch structure;
+- indexed errors, missing targets, malformed/incomplete results;
+- retention of successful IDs and original indexes;
+- a similar but different email must not block creation;
+- an exact duplicate must block creation before POST.
+
+Update README, CHANGELOG and .ai/STATE.md.
+Run composer check and verify the remote compatibility CI.
+Do not implement OAuth2 or modify upstream repositories in this task.

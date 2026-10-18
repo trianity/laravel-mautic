@@ -33,6 +33,30 @@ Review and select the next milestone. `prompts/03-oauth2.md` is next in roadmap 
 model-independent identity mapping follows in `prompts/04-contact-identity.md`.
 Inspect the selected task's design gates before implementation.
 
+## Contact write corrections — 2026-10-18
+
+Corrected batch normalization against Mautic 7.2.1's actual response structure:
+`contacts`, `statusCodes` and `errors` are separate arrays keyed by the original
+request index. `ContactBatch` now exposes a complete ordered list of typed successful,
+failed and unknown outcomes while retaining all successful remote contacts. Missing
+targets are classified per item; malformed or incomplete items remain unknown. Batch
+operations are explicitly non-atomic and no partial result is automatically retried.
+
+Duplicate-email preflight now uses the SDK's structured `email eq` query, pages all
+reported matches, and compares the returned email values after trimming and ASCII
+case-folding. Counts and similar search results no longer block creation, while an
+exact normalized match still stops the POST. The concurrent-create race remains.
+
+Focused regression tests use the real SDK with fake HTTP and cover mixed batch
+outcomes, indexes, missing targets, malformed/incomplete items, successful ID
+retention, structured query parameters, pagination, similar emails and exact matches.
+Local `composer check` passed with strict Composer validation, Pint, Larastan level 8
+and 64 tests / 166 assertions. It ran in the approved unrestricted environment because
+PHPStan's loopback TCP server is unavailable in the local sandbox. The latest remote
+CI for base commit `d1ed594` passed all PHP 8.4/8.5 and Laravel 12/13 jobs plus Pint and
+Larastan. These uncommitted corrections cannot have a remote CI result until they are
+committed and pushed. No live Mautic instance or production endpoint was called.
+
 ## Contact writes — 2026-10-18
 
 Implemented `Contracts\ContactWriter` through `MauticConnection::contactWrites()` for

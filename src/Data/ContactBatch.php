@@ -6,6 +6,19 @@ namespace Trianity\LaravelMautic\Data;
 
 final readonly class ContactBatch
 {
-    /** @param list<Contact> $contacts */
-    public function __construct(public array $contacts) {}
+    /** @var list<Contact> */
+    public array $contacts;
+
+    /** @param list<ContactBatchItem> $items */
+    public function __construct(public array $items)
+    {
+        $contacts = [];
+        foreach ($items as $item) {
+            if ($item->contact !== null) {
+                $contacts[] = $item->contact;
+            }
+        }
+
+        $this->contacts = $contacts;
+    }
 }

@@ -19,5 +19,12 @@
 - Explicit manual segment add/remove commands, mutation safety metadata and ambiguous
   create outcomes without automatic retries.
 
+### Fixed
+
+- Normalize Mautic's separate indexed batch contacts, status codes and errors into
+  complete per-request outcomes without discarding successful contacts on partial failure.
+- Use paginated structured email equality queries and compare normalized returned
+  values, avoiding false duplicate detection from counts or search syntax characters.
+
 No stable release, Packagist publication, OAuth2, durable synchronization, remote
 deletion or general DNC-removal API is included.

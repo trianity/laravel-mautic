@@ -7,6 +7,7 @@ namespace Trianity\LaravelMautic\Fakes;
 use Trianity\LaravelMautic\Contracts\ContactWriter;
 use Trianity\LaravelMautic\Data\Contact;
 use Trianity\LaravelMautic\Data\ContactBatch;
+use Trianity\LaravelMautic\Data\ContactBatchItem;
 use Trianity\LaravelMautic\Data\OptionalValue;
 use Trianity\LaravelMautic\Data\ValuePresence;
 use Trianity\LaravelMautic\Exceptions\ContactAlreadyExists;
@@ -14,6 +15,7 @@ use Trianity\LaravelMautic\Exceptions\ContactUpdateTargetNotFound;
 use Trianity\LaravelMautic\Exceptions\InvalidWriteRequest;
 use Trianity\LaravelMautic\Write\ContactFields;
 use Trianity\LaravelMautic\Write\ContactUpdate;
+use Trianity\LaravelMautic\Write\FailureKind;
 use Trianity\LaravelMautic\Write\MutationOperation;
 
 final class FakeContactWriter implements ContactWriter
@@ -80,6 +82,7 @@ final class FakeContactWriter implements ContactWriter
             throw new InvalidWriteRequest('A contact creation batch cannot be empty.');
         }
 
+        $contacts = array_values($contacts);
         $seen = [];
         foreach ($contacts as $fields) {
             $email = $fields->value('email');
@@ -94,10 +97,12 @@ final class FakeContactWriter implements ContactWriter
             $this->rejectKnownDuplicate($fields, MutationOperation::CreateContactsBatch);
         }
 
-        return new ContactBatch(array_values(array_map(
-            fn (ContactFields $fields): Contact => $this->create($fields),
-            $contacts,
-        )));
+        $items = [];
+        foreach ($contacts as $index => $fields) {
+            $items[] = ContactBatchItem::successful($index, $this->create($fields), 201);
+        }
+
+        return new ContactBatch($items);
     }
 
     public function updateBatch(ContactUpdate ...$contacts): ContactBatch
@@ -106,16 +111,23 @@ final class FakeContactWriter implements ContactWriter
             throw new InvalidWriteRequest('A contact update batch cannot be empty.');
         }
 
-        foreach ($contacts as $update) {
+        $contacts = array_values($contacts);
+        $items = [];
+        foreach ($contacts as $index => $update) {
             if (! isset($this->storedContacts[$update->remoteId])) {
-                throw new ContactUpdateTargetNotFound('fake', MutationOperation::UpdateContactsBatch);
+                $items[] = ContactBatchItem::failed($index, FailureKind::TargetNotFound, 404);
+
+                continue;
             }
+
+            $items[] = ContactBatchItem::successful(
+                $index,
+                $this->update($update->remoteId, $update->fields),
+                200,
+            );
         }
 
-        return new ContactBatch(array_values(array_map(
-            fn (ContactUpdate $update): Contact => $this->update($update->remoteId, $update->fields),
-            $contacts,
-        )));
+        return new ContactBatch($items);
     }
 
     public function addToSegment(int $remoteId, int $segmentId): void

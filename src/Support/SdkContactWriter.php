@@ -6,11 +6,14 @@ namespace Trianity\LaravelMautic\Support;
 
 use Mautic\Api\Contacts;
 use Mautic\Api\Segments;
+use Mautic\QueryBuilder\QueryBuilder;
 use Trianity\LaravelMautic\Contracts\ContactWriter;
 use Trianity\LaravelMautic\Data\Contact;
 use Trianity\LaravelMautic\Data\ContactBatch;
+use Trianity\LaravelMautic\Data\ContactBatchItem;
 use Trianity\LaravelMautic\Exceptions\ContactAlreadyExists;
 use Trianity\LaravelMautic\Exceptions\InvalidWriteRequest;
+use Trianity\LaravelMautic\Exceptions\MauticWriteException;
 use Trianity\LaravelMautic\Read\ReadOperation;
 use Trianity\LaravelMautic\Write\ContactFields;
 use Trianity\LaravelMautic\Write\ContactUpdate;
@@ -76,14 +79,10 @@ final readonly class SdkContactWriter implements ContactWriter
         }
 
         $operation = MutationOperation::CreateContactsBatch;
-        $response = $this->boundary->successfulWrite(
-            $this->contacts->createBatch(array_map(
-                static fn (ContactFields $fields): array => $fields->toPayload(),
-                $contacts,
-            )),
-            $operation,
-            $this->connection,
-        );
+        $response = $this->contacts->createBatch(array_map(
+            static fn (ContactFields $fields): array => $fields->toPayload(),
+            $contacts,
+        ));
 
         return $this->mapBatch($response, count($contacts), $operation);
     }
@@ -101,11 +100,7 @@ final readonly class SdkContactWriter implements ContactWriter
         }
 
         $operation = MutationOperation::UpdateContactsBatch;
-        $response = $this->boundary->successfulWrite(
-            $this->contacts->editBatch($payloads, false),
-            $operation,
-            $this->connection,
-        );
+        $response = $this->contacts->editBatch($payloads, false);
 
         return $this->mapBatch($response, count($contacts), $operation);
     }
@@ -131,19 +126,65 @@ final readonly class SdkContactWriter implements ContactWriter
             return;
         }
 
-        $response = $this->boundary->successful(
-            $this->contacts->getList('email:'.$email, 0, 2),
-            ReadOperation::SearchContacts,
-            $this->connection,
-        );
+        $normalizedEmail = $this->normalizeEmail($email);
+        $query = new QueryBuilder;
+        $query->addWhere($query->expr()->eq('email', $email));
+        $start = 0;
 
-        if (! is_int($response['total'] ?? null) || ! is_array($response['contacts'] ?? null)) {
-            $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
+        do {
+            $rawResponse = $this->contacts->getCustomList($query, $start, 100);
+            if (! is_array($rawResponse)) {
+                $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
+            }
+
+            $response = $this->boundary->successful(
+                $rawResponse,
+                ReadOperation::SearchContacts,
+                $this->connection,
+            );
+
+            if (! is_int($response['total'] ?? null) || ! is_array($response['contacts'] ?? null)) {
+                $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
+            }
+
+            foreach ($response['contacts'] as $contact) {
+                $returnedEmail = $this->contactEmail($contact);
+                if ($returnedEmail === null) {
+                    $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
+                }
+
+                if ($this->normalizeEmail($returnedEmail) === $normalizedEmail) {
+                    throw new ContactAlreadyExists($this->connection, $operation);
+                }
+            }
+
+            $count = count($response['contacts']);
+            $start += $count;
+            if ($count === 0 && $start < $response['total']) {
+                $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
+            }
+        } while ($start < $response['total']);
+    }
+
+    private function normalizeEmail(string $email): string
+    {
+        return strtolower(trim($email));
+    }
+
+    private function contactEmail(mixed $contact): ?string
+    {
+        if (! is_array($contact)) {
+            return null;
         }
 
-        if ($response['total'] > 0) {
-            throw new ContactAlreadyExists($this->connection, $operation);
+        $allValue = $contact['fields']['all']['email'] ?? null;
+        if (is_string($allValue)) {
+            return $allValue;
         }
+
+        $coreValue = $contact['fields']['core']['email']['value'] ?? null;
+
+        return is_string($coreValue) ? $coreValue : null;
     }
 
     /** @param list<ContactFields> $contacts */
@@ -156,7 +197,7 @@ final readonly class SdkContactWriter implements ContactWriter
                 continue;
             }
 
-            $normalized = strtolower(trim($email));
+            $normalized = $this->normalizeEmail($email);
             if (isset($seen[$normalized])) {
                 throw new ContactAlreadyExists($this->connection, MutationOperation::CreateContactsBatch);
             }
@@ -178,22 +219,68 @@ final readonly class SdkContactWriter implements ContactWriter
     /** @param array<string, mixed> $response */
     private function mapBatch(array $response, int $expectedCount, MutationOperation $operation): ContactBatch
     {
-        if (! is_array($response['contacts'] ?? null)
-            || count($response['contacts']) !== $expectedCount) {
-            $this->boundary->unexpectedWrite($operation, $this->connection);
+        if (! array_key_exists('contacts', $response) && ! array_key_exists('statusCodes', $response)) {
+            $this->boundary->successfulWrite($response, $operation, $this->connection);
         }
 
-        $contacts = [];
-        foreach (array_values($response['contacts']) as $index => $item) {
-            if (! is_array($item)) {
-                $this->boundary->unexpectedWrite($operation, $this->connection, $index);
+        $contacts = is_array($response['contacts'] ?? null) ? $response['contacts'] : [];
+        $statusCodes = is_array($response['statusCodes'] ?? null) ? $response['statusCodes'] : [];
+        $errors = is_array($response['errors'] ?? null) ? $response['errors'] : [];
+        $items = [];
+
+        for ($index = 0; $index < $expectedCount; $index++) {
+            $status = $this->boundary->statusCode($statusCodes[$index] ?? null);
+            if (array_key_exists($index, $errors)) {
+                $error = $errors[$index];
+                if (! is_array($error)) {
+                    $items[] = ContactBatchItem::unknown($index, $status);
+
+                    continue;
+                }
+
+                $errorStatus = $this->boundary->statusCode($error['code'] ?? null) ?? $status;
+                $rawMessage = $error['message'] ?? null;
+                if ($errorStatus === null && ! is_string($rawMessage)) {
+                    $items[] = ContactBatchItem::unknown($index);
+
+                    continue;
+                }
+
+                $message = is_string($rawMessage) ? $rawMessage : '';
+                $items[] = ContactBatchItem::failed(
+                    $index,
+                    $this->boundary->writeFailureKind($errorStatus, $message),
+                    $errorStatus,
+                );
+
+                continue;
             }
 
-            $item = $this->boundary->successfulWrite($item, $operation, $this->connection, $index);
-            $contacts[] = $this->mapper->contact($item, $operation);
+            if ($status !== null && ($status < 200 || $status >= 300)) {
+                $items[] = ContactBatchItem::failed(
+                    $index,
+                    $this->boundary->writeFailureKind($status),
+                    $status,
+                );
+
+                continue;
+            }
+
+            if ($status === null || ! array_key_exists($index, $contacts)) {
+                $items[] = ContactBatchItem::unknown($index, $status);
+
+                continue;
+            }
+
+            try {
+                $contact = $this->mapper->contact($contacts[$index], $operation);
+                $items[] = ContactBatchItem::successful($index, $contact, $status);
+            } catch (MauticWriteException) {
+                $items[] = ContactBatchItem::unknown($index, $status);
+            }
         }
 
-        return new ContactBatch($contacts);
+        return new ContactBatch($items);
     }
 
     private function validateRemoteId(int $remoteId): void

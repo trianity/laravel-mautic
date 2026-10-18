@@ -38,7 +38,16 @@ known matches and intra-batch duplicates are rejected. This read-before-write ch
 does not eliminate concurrent races, so durable identity and reconciliation remain
 future work.
 
-The same response boundary classifies mutation failures and checks each batch item.
+The same response boundary classifies mutation failures. Batch results preserve the
+server's request indexes and separately classify every item as successful, failed or
+unknown; successful remote IDs survive sibling failures. A partial batch is never
+treated as atomic or automatically retried.
+
+Duplicate preflights use the SDK's structured exact-equality filter, paginate all
+reported matches and compare returned email values after whitespace trimming and
+ASCII case-folding. They do not trust a search count or interpolate user values into
+Mautic's search-command syntax.
+
 All mutations publish non-retryable, side-effectful operation metadata. Transport
 loss during a create is an ambiguous outcome, not a safe retry. The deterministic
 `FakeContactWriter` implements the same contract.
