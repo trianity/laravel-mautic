@@ -35,6 +35,16 @@ return [
         'maximum_delay_seconds' => 300,
     ],
 
+    'inbox' => [
+        'database_connection' => null,
+        'deliveries_table' => 'mautic_webhook_deliveries',
+        'events_table' => 'mautic_webhook_events',
+        'locks_table' => 'mautic_webhook_locks',
+        'queue' => null,
+        'maximum_body_bytes' => 1_048_576,
+        'lease_seconds' => 30,
+    ],
+
     'connections' => [
         'main' => [
             // Instance root URL, including a subdirectory if applicable.
@@ -53,6 +63,14 @@ return [
             //     'client_secret_env' => 'MAUTIC_OAUTH_CLIENT_SECRET',
             //     'redirect_uri' => env('MAUTIC_OAUTH_REDIRECT_URI', ''),
             //     'scopes' => [],
+            // ],
+            // Opt-in webhook ingress (the secret value remains outside config cache):
+            // 'webhook' => [
+            //     'secret_env' => 'MAUTIC_WEBHOOK_SECRET',
+            //     'allowed_events' => [
+            //         'mautic.lead_post_save_update',
+            //         'mautic.lead_post_delete',
+            //     ],
             // ],
         ],
     ],

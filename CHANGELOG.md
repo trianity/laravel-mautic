@@ -34,6 +34,10 @@
 - Audited operator recovery for ambiguous creates and failed commands, with bounded
   retry policy and numeric `Retry-After` propagation.
 - Attested, audited ambiguous-update confirmation and replay authorization.
+- Opt-in verified Mautic webhook ingress with raw-body HMAC authentication, encrypted
+  durable batch storage, asynchronous recovery and shared per-contact processing leases.
+- Model-independent inbound contact projection through existing mappings and field
+  ownership, including stale-event handling and explicit consent/DNC separation.
 
 ### Fixed
 
@@ -61,5 +65,5 @@
   newer token rotations, classify token endpoint failures, and canonicalize instance
   root/API URLs for root and subdirectory installations.
 
-No stable release, Packagist publication, webhook inbox, remote deletion or general
-DNC-removal API is included. OAuth2 client-credentials is not implemented.
+No stable release, Packagist publication, automatic webhook route, remote deletion or
+general DNC-removal API is included. OAuth2 client-credentials is not implemented.

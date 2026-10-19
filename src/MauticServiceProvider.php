@@ -13,14 +13,23 @@ use Trianity\LaravelMautic\Contracts\ConnectionFactory;
 use Trianity\LaravelMautic\Contracts\ContactMappingRepository;
 use Trianity\LaravelMautic\Contracts\ContactSyncTransport;
 use Trianity\LaravelMautic\Contracts\HttpClientFactory;
+use Trianity\LaravelMautic\Contracts\InboundContactProjector;
 use Trianity\LaravelMautic\Contracts\OAuthClientCredentialsProvider;
 use Trianity\LaravelMautic\Contracts\OAuthRefreshLock;
 use Trianity\LaravelMautic\Contracts\OAuthStateRepository;
 use Trianity\LaravelMautic\Contracts\OAuthTokenEndpoint;
 use Trianity\LaravelMautic\Contracts\OAuthTokenRepository;
+use Trianity\LaravelMautic\Contracts\WebhookSecretProvider;
 use Trianity\LaravelMautic\Exceptions\InvalidConfiguration;
 use Trianity\LaravelMautic\Http\GuzzleHttpClientFactory;
 use Trianity\LaravelMautic\Identity\DatabaseContactMappingRepository;
+use Trianity\LaravelMautic\Inbox\DatabaseWebhookInboxStore;
+use Trianity\LaravelMautic\Inbox\EnvironmentWebhookSecretProvider;
+use Trianity\LaravelMautic\Inbox\WebhookContactMapper;
+use Trianity\LaravelMautic\Inbox\WebhookInbox;
+use Trianity\LaravelMautic\Inbox\WebhookInboxDispatcher;
+use Trianity\LaravelMautic\Inbox\WebhookInboxPoller;
+use Trianity\LaravelMautic\Inbox\WebhookInboxProcessor;
 use Trianity\LaravelMautic\OAuth\DatabaseOAuthStateRepository;
 use Trianity\LaravelMautic\OAuth\DatabaseOAuthTokenRepository;
 use Trianity\LaravelMautic\OAuth\DatabaseRefreshLock;
@@ -46,6 +55,7 @@ final class MauticServiceProvider extends ServiceProvider
         $this->mergeConfigFrom(__DIR__.'/../config/mautic.php', 'mautic');
 
         $this->app->bindIf(HttpClientFactory::class, GuzzleHttpClientFactory::class);
+        $this->app->bindIf(WebhookSecretProvider::class, EnvironmentWebhookSecretProvider::class);
         $this->app->bindIf(Clock::class, SystemClock::class);
         $this->app->bindIf(OAuthClientCredentialsProvider::class, EnvironmentOAuthClientCredentialsProvider::class);
         $this->app->bindIf(OAuthTokenEndpoint::class, HttpOAuthTokenEndpoint::class);
@@ -149,6 +159,39 @@ final class MauticServiceProvider extends ServiceProvider
             );
         });
         $this->app->singleton(OutboxOperator::class);
+        $this->app->singleton(DatabaseWebhookInboxStore::class, function ($app): DatabaseWebhookInboxStore {
+            $connection = $app['config']->get('mautic.inbox.database_connection');
+
+            return new DatabaseWebhookInboxStore(
+                $app['db'],
+                $app['encrypter'],
+                $app->make(Clock::class),
+                is_string($connection) && $connection !== '' ? $connection : null,
+                $this->inboxTable('deliveries_table', 'mautic_webhook_deliveries'),
+                $this->inboxTable('events_table', 'mautic_webhook_events'),
+                $this->inboxTable('locks_table', 'mautic_webhook_locks'),
+            );
+        });
+        $this->app->singleton(WebhookInboxDispatcher::class, function ($app): WebhookInboxDispatcher {
+            $queue = $app['config']->get('mautic.inbox.queue');
+
+            return new WebhookInboxDispatcher(
+                $app->make(Queue::class),
+                is_string($queue) && $queue !== '' ? $queue : null,
+            );
+        });
+        $this->app->singleton(WebhookInbox::class);
+        $this->app->singleton(WebhookInboxPoller::class);
+        $this->app->singleton(WebhookInboxProcessor::class, function ($app): WebhookInboxProcessor {
+            return new WebhookInboxProcessor(
+                $app->make(DatabaseWebhookInboxStore::class),
+                $app->make(ContactMappingRepository::class),
+                $app->make(InboundContactProjector::class),
+                $app->make(WebhookContactMapper::class),
+                $app['config'],
+                (int) $app['config']->get('mautic.inbox.lease_seconds', 30),
+            );
+        });
         $this->app->bindIf(ConnectionFactory::class, ApiLibraryConnectionFactory::class);
         $this->app->singleton(MauticManager::class);
     }
@@ -173,6 +216,11 @@ final class MauticServiceProvider extends ServiceProvider
             ];
             $this->publishes($outboxMigration, 'mautic-migrations');
             $this->publishes($outboxMigration, 'mautic-outbox-migrations');
+            $inboxMigration = [
+                __DIR__.'/../database/migrations/create_mautic_webhook_inbox.php.stub' => database_path('migrations/2026_10_19_030000_create_mautic_webhook_inbox.php'),
+            ];
+            $this->publishes($inboxMigration, 'mautic-migrations');
+            $this->publishes($inboxMigration, 'mautic-inbox-migrations');
         }
     }
 
@@ -193,6 +241,13 @@ final class MauticServiceProvider extends ServiceProvider
     private function outboxTable(string $key, string $default): string
     {
         $table = $this->app->make(Repository::class)->get('mautic.outbox.'.$key, $default);
+
+        return is_string($table) && $table !== '' ? $table : $default;
+    }
+
+    private function inboxTable(string $key, string $default): string
+    {
+        $table = $this->app->make(Repository::class)->get('mautic.inbox.'.$key, $default);
 
         return is_string($table) && $table !== '' ? $table : $default;
     }

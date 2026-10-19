@@ -10,8 +10,8 @@
 
 The connection foundation, normalized contact reads, explicit partial writes, manual
 segment commands, identity mappings, field ownership and transactional outgoing
-contact outbox are implemented today. The remaining sections state design constraints
-for later milestones; they are not a feature list.
+contact outbox and verified webhook inbox are implemented today. The remaining sections
+state design constraints for later milestones; they are not a feature list.
 
 ## Current runtime
 
@@ -141,15 +141,35 @@ verified remote ID or confirm remote absence before retry, and every operator de
 is audited. Full details are in
 `docs/decisions/002-outbox-delivery.md`.
 
-## Incoming delivery and reconciliation (planned)
+## Incoming delivery
 
-- Inbox: verify raw-body HMAC first, persist events durably, acknowledge, then process.
-  Handle multiple event types and multiple items in one delivery. Separate delivery
-  deduplication from event deduplication and do not suppress legitimate repeated events.
-- No global exactly-once claim. Prevent sync loops using field ownership and change
-  detection, not just a short-lived process flag. Handle duplicates and stale events.
-- Reconciliation: bounded, paginated, resumable and observable. Do not infer deletion
-  from an incomplete scan or a failed page. Missing events must be recoverable.
+The host passes an exact raw body and `Webhook-Signature` header to the opt-in inbox;
+the package registers no route. Connection-specific secrets stay behind a replaceable
+runtime provider. Body bounds apply before HMAC work, and base64 HMAC-SHA256 verification
+precedes JSON parsing or persistence. A delivery and all of its encrypted event payloads
+commit atomically before queue dispatch, while a bounded poller recovers dispatch gaps
+and expired processing leases.
+
+Delivery receipt identity and optional upstream semantic event identity are different.
+Mautic does not document a delivery UUID and may omit event UUIDs and timestamps, so
+identical authenticated deliveries are retained rather than collapsed by body hash.
+Explicit event IDs deduplicate only after an earlier copy completed. Per-connection,
+per-remote-contact database leases serialize processing; strict older-than ordering and
+field change detection handle stale and repeated events. This is not an exactly-once or
+freshness claim because the signed content contains no timestamp.
+
+Allowed contact updates resolve an existing connection-scoped mapping, then use a host
+bound `InboundContactProjector` and the existing `FieldMapper`. Only changed inbound
+Mautic-owned/shared-winner values are applied. Host-owned fields cannot echo outward from
+the package, and channel subscription, consent and DNC events are excluded from generic
+field handling. Allowed deletes mark mapping state only. Unknown, disallowed and unmapped
+events remain inspectable without exposing customer payloads in logs. Full details are
+in `docs/decisions/003-webhook-inbox.md`.
+
+## Reconciliation (planned)
+
+Reconciliation must be bounded, paginated, resumable and observable. Do not infer
+deletion from an incomplete scan or a failed page. Missing events must be recoverable.
 
 Use the SDK's error payloads and transport exceptions to distinguish auth failures,
 validation failures, throttling, transient server errors and ambiguous mutation

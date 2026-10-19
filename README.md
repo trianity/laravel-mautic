@@ -8,8 +8,8 @@ MIT licensed; intended for publication as `trianity/laravel-mautic` on Packagist
 **Status: development package, no stable release yet.** Basic Auth and opt-in OAuth2
 connections, normalized contact reads, explicit contact writes, manual segment
 commands, durable identity mappings, field ownership rules, transactional outgoing
-synchronization and raw upstream contexts are implemented. Webhooks, incoming
-synchronization and general reconciliation are planned, not available features.
+synchronization, a verified webhook inbox and raw upstream contexts are implemented.
+General reconciliation is planned, not an available feature.
 No real Mautic server compatibility is claimed until the integration milestone.
 
 ## Requirements
@@ -321,6 +321,106 @@ stubs must recreate its package outbox schema before applying the canonical migr
 The package never drops or resets a host database automatically. Do not run
 `migrate:fresh` against a host application database or a production database copy;
 perform any scoped recreation only in a confirmed disposable development environment.
+
+## Verified webhook inbox
+
+Webhook ingress is opt-in and the package registers no route. Publish the inbox
+migration, add a connection-specific runtime secret name and explicitly allow only the
+events the host is ready to process:
+
+```bash
+php artisan vendor:publish --tag=mautic-inbox-migrations
+php artisan migrate
+```
+
+```php
+// config/mautic.php
+'inbox' => [
+    'maximum_body_bytes' => 1_048_576,
+    'lease_seconds' => 30,
+],
+
+'connections' => [
+    'main' => [
+        // ...
+        'webhook' => [
+            'secret_env' => 'MAUTIC_WEBHOOK_SECRET',
+            'allowed_events' => [
+                'mautic.lead_post_save_update',
+                'mautic.lead_post_delete',
+            ],
+        ],
+    ],
+],
+```
+
+The default secret provider reads the named environment variable at runtime; the secret
+value does not enter published configuration or Laravel's configuration cache. Mautic
+7.2 documents `Webhook-Signature` as base64-encoded HMAC-SHA256 over the exact raw
+request body. Pass that unmodified body and header to `WebhookInbox::receive()` and
+return a successful response only after it returns:
+
+```php
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Route;
+use Trianity\LaravelMautic\Inbox\WebhookInbox;
+
+Route::post('/integrations/mautic/{connection}/webhook', function (
+    string $connection,
+    Request $request,
+    WebhookInbox $inbox,
+) {
+    $receipt = $inbox->receive(
+        $connection,
+        $request->getContent(),
+        $request->headers->get('Webhook-Signature'),
+    );
+
+    return response()->json(['receipt_id' => $receipt->receiptId], 202);
+});
+```
+
+Map `WebhookIngressException` to a non-success response: authentication failures should
+not be processed, malformed/oversized bodies are client errors, and persistence failure
+must be retryable by the sender. If the host enables CSRF protection for web routes,
+exclude only the exact webhook URI pattern (for example
+`integrations/mautic/*/webhook`), not the integration namespace or API routes broadly.
+Signature verification is the authentication boundary for this public endpoint; do not
+add browser redirects or session authentication.
+
+The delivery and each contained event commit before queue dispatch. Event payloads are
+encrypted with the host `APP_KEY`; metadata contains hashes and package-owned status
+codes, and the package does not log customer payloads. Dispatch is only a wake-up: use
+`WebhookInboxPoller::recover()` to redispatch pending or expired processing rows after a
+queue outage or process crash. Database leases serialize events for one connection and
+remote contact. The host must bind `Contracts\InboundContactProjector` to provide the
+current allowlisted host snapshot, its `FieldMapper`, and the explicit application of
+inbound changes. Mautic-owned fields may flow inward; host-owned fields and unchanged
+values do not, so generic inbound handling does not echo an outbox write.
+
+Only contact update and delete events are eligible for generic processing. Unknown,
+unmapped and disallowed events remain inspectable as ignored. Channel subscription,
+consent and DNC changes are never treated as generic contact fields. Deletes update only
+the existing connection-scoped mapping state; they do not delete a host contact.
+
+Mautic's documented payload has event-type arrays and may batch multiple types and
+items. It does not document a delivery UUID, and not every event is guaranteed to carry
+an event UUID or timestamp. Consequently, every authenticated delivery receives its own
+receipt and repeated byte-identical deliveries are preserved. An explicit `eventId` or
+`event_id`, when supplied, is a separate semantic identity and can be deduplicated.
+Otherwise change detection provides idempotency. A strictly older timestamp is ignored
+after a newer event for the same mapped contact has completed; equal or absent
+timestamps are processed normally.
+
+The signature contains no timestamp, so it proves authenticity but not freshness. A
+captured signed body can be replayed and will be durably recorded. The package makes no
+exactly-once claim and performs no automatic retention deletion; hosts must choose and
+operate a retention policy appropriate to their audit and privacy requirements. See
+[decision 003](docs/decisions/003-webhook-inbox.md) for the persistence and crash model.
+The opt-in `MariaDbWebhookInboxTest` exercises the published final schema, byte-exact
+semantic hashes under a case-insensitive collation and the database-backed shared contact
+lease on the disposable MariaDB configured by `MAUTIC_TEST_MARIADB_*`. It is real shared
+storage evidence, but not a separate-process inbox stress test.
 
 ## Normalized contact reads
 

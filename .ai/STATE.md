@@ -19,14 +19,17 @@
 - Transactional outgoing contact outbox with after-commit dispatch, recovery polling,
   sequential aggregate revisions, conservative lease-expiry recovery, connection-level
   OAuth blockers and audited ambiguous create/update recovery.
+- Opt-in verified webhook inbox with connection-specific raw-body HMAC authentication,
+  encrypted durable events, asynchronous recovery, shared contact leases and explicit
+  host-owned inbound projection through mapping and field-ownership policies.
 - Pest unit/feature tests, Testbench, Pint, Larastan level 8, CI matrix.
 - Ordered implementation prompts and architecture/release/contribution guidance.
 
 ## Not implemented
 
-Durable inbox, webhook endpoint, general reconciliation, consent workflows and live
-Mautic integration tests. Remote deletion and general DNC removal are not exposed. No
-migration runs implicitly and no automatic model events exist. No release tag or
+General reconciliation, consent workflows and live Mautic integration tests. No webhook
+route is automatically exposed. Remote deletion and general DNC removal are not exposed.
+No migration runs implicitly and no automatic model events exist. No release tag or
 Packagist publication exists.
 
 ## Verification
@@ -37,9 +40,50 @@ Tests exercise the real SDK with fake HTTP, not a real Mautic installation.
 
 ## Next task
 
-Review and select the next milestone. Verified webhook inbox in
-`prompts/06-webhook-inbox.md` is next in roadmap order.
+Review and select the next milestone. Reconciliation and integration validation in
+`prompts/07-reconciliation.md` is next in roadmap order.
 Inspect the selected task's design gates before implementation.
+
+## Verified webhook inbox and inbound sync — 2026-10-19
+
+Task 06 adds opt-in `WebhookInbox::receive()` without registering a route. It verifies
+Mautic 7.2's documented `Webhook-Signature` as base64 HMAC-SHA256 over the exact bounded
+raw body using a connection-scoped runtime secret, then validates the event-type/list
+payload and atomically stores a delivery plus encrypted event rows before queue dispatch.
+Missing or invalid signatures, invalid JSON, malformed batches, oversized bodies and
+persistence failures are typed separately. The package logs no customer payload.
+
+Each authenticated request receives a distinct receipt because Mautic does not document
+a delivery UUID. Identical legitimate deliveries are retained. Optional explicit
+`eventId`/`event_id` values are separate semantic identities; payload hashes are evidence,
+not deduplication keys. The signature contains no timestamp and therefore provides no
+freshness guarantee. No exactly-once claim or automatic retention deletion is made.
+
+Pending and expired processing rows are recoverable by a bounded poller. Database-shared
+leases serialize processing per byte-exact connection and remote contact. Strictly older
+timestamped events are stale only after a newer mapped event completed; equal or missing
+timestamps proceed through current-value comparison. A crash after host application but
+before inbox completion can replay once the lease expires, and unchanged-field detection
+turns that retry into a no-op.
+
+Allowed contact updates resolve the existing connection-scoped mapping and pass the
+remote contact through a host-bound `InboundContactProjector` and `FieldMapper`. Only
+changed inbound Mautic-owned/shared-winner fields are applied; host-owned values do not
+echo. Allowed deletes mark mapping state without deleting a host contact. Unknown,
+unmapped and disallowed events are retained as ignored. Channel subscription, consent
+and DNC events are never generic field updates.
+
+Focused SQLite coverage validates signatures, bounds, invalid JSON, encrypted multi-type
+batches, persistence rollback, repeated delivery preservation, explicit semantic
+duplicates, stale ordering, connection isolation, consent exclusion, expired event
+recovery, shared contact lease deferral, mapping deletion and absence of an automatic
+route. Local `composer check` passed Composer validation, Pint, Larastan level 8 and
+160 tests / 690 assertions; the three opt-in MariaDB tests were skipped in that default
+run. The dedicated disposable MariaDB inbox test then passed the published final schema,
+byte-exact semantic hashes under a case-insensitive collation and the database-backed
+shared contact lease with 1 test / 9 assertions. This proves the lock contract against a
+real shared store, but is not a separate-process inbox stress test. No live Mautic endpoint
+was called, and remote CI was not rerun because no authorized push occurred.
 
 ## Durable outgoing synchronization — 2026-10-19
 
