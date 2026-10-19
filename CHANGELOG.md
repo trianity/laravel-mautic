@@ -25,6 +25,10 @@
   of rotated access and refresh tokens before release.
 - Host-context-bound OAuth state, versioned token compare-and-set persistence and typed
   pre-request authentication failures across the upstream SDK boundary.
+- Model-independent, connection-scoped contact identity mappings with optional
+  publishable Laravel persistence and versioned explicit recovery.
+- Exact-email discovery with none/unique/ambiguous outcomes and allowlisted field
+  ownership resolution that preserves unchanged, clear and set intent.
 
 ### Fixed
 

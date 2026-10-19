@@ -8,9 +8,10 @@
 | Laravel package | Named connections, transport, normalized services and durable integration infrastructure | trianity/laravel-mautic |
 | Host domain | Contact model, identity verification, field ownership, CRM workflows and consent evidence | Host application |
 
-The connection foundation, normalized contact reads, explicit partial writes and
-manual segment commands are implemented today. The remaining sections state design
-constraints for later milestones; they are not a feature list.
+The connection foundation, normalized contact reads, explicit partial writes, manual
+segment commands, identity mappings and field ownership are implemented today. The
+remaining sections state design constraints for later milestones; they are not a
+feature list.
 
 ## Current runtime
 
@@ -69,17 +70,27 @@ against the installed SDK and a target disposable Mautic instance.
 
 ## Identity and field ownership
 
-Use a connection-scoped mapping between an opaque local reference and Mautic ID.
-Do not require Eloquent, a User model or a guard in the core contract. If optional
-Eloquent mapping storage is added, use a morph-map-aware reference or an adapter,
-with uniqueness constraints and a documented tenancy boundary.
-Email lookup helps initial matching. Zero, one and multiple matches are separate
-outcomes; do not silently merge or pick the first result. Email changes must retain
-mapping continuity. A deleted/merged remote contact requires explicit recovery.
+`LocalContactReference` contains an opaque host-defined `scope` and `key`. The scope
+is the explicit tenancy/domain namespace; no Eloquent model, User, guard, current
+tenant or request state is consulted. `ContactMappingRepository` is the core seam and
+the optional database implementation is bound by default. Its two unique constraints
+are `(connection, local_scope, local_key)` and `(connection, remote_id)`. Exact claims
+are idempotent; crossed claims conflict. Generation compare-and-set protects remote
+state transitions and explicit relinking from stale writers.
 
-Field ownership belongs to the host's policy: CRM-owned, Mautic-owned, or explicitly
-resolved shared fields. Billing details, operator notes and auth data must not
-be exported by default. Mapping is an allowlist, not serialization of an entire model.
+Remote state is `active`, `missing`, `deleted` or `merged`; a merge may retain a
+review target without claiming it. Observation never recreates or relinks a contact.
+Exact-email discovery uses the SDK's structured equality query and returns none,
+unique or ambiguous contacts without writing a mapping. Email is not stored as
+identity, so later email changes preserve mapping continuity.
+
+`FieldMapper` consumes only `HostContactFields` with an explicit host allowlist and
+explicit `FieldRule` aliases. Host-owned, Mautic-owned and shared host-wins/Mautic-wins
+rules resolve to inspectable unchanged, clear or set decisions. Equal authoritative
+and target values remain unchanged. The mapper does not perform delivery or serialize
+a model. DNC, consent evidence, tags, segment membership and server-managed fields are
+outside this contract. The full schema, concurrency and supported-database assumptions
+are recorded in `docs/decisions/001-contact-identity-storage.md`.
 
 Segment membership is a marketing classification, not an authentication permission.
 Dynamic membership can lag the related field update. Distinguish static/manual

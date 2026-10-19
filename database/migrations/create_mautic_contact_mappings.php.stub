@@ -1,0 +1,39 @@
+<?php
+
+declare(strict_types=1);
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        $connection = config('mautic.identity.database_connection');
+        $schema = Schema::connection(is_string($connection) && $connection !== '' ? $connection : null);
+
+        $schema->create(config('mautic.identity.mappings_table', 'mautic_contact_mappings'), function (Blueprint $table): void {
+            $table->id();
+            $table->string('connection', 191);
+            $table->string('local_scope', 191);
+            $table->string('local_key', 191);
+            $table->unsignedBigInteger('remote_id');
+            $table->string('remote_state', 16);
+            $table->unsignedBigInteger('merged_into_remote_id')->nullable();
+            $table->unsignedBigInteger('generation');
+            $table->timestamps();
+
+            $table->unique(['connection', 'local_scope', 'local_key'], 'mautic_mapping_local_unique');
+            $table->unique(['connection', 'remote_id'], 'mautic_mapping_remote_unique');
+            $table->index(['connection', 'remote_state'], 'mautic_mapping_state_index');
+        });
+    }
+
+    public function down(): void
+    {
+        $connection = config('mautic.identity.database_connection');
+        Schema::connection(is_string($connection) && $connection !== '' ? $connection : null)
+            ->dropIfExists(config('mautic.identity.mappings_table', 'mautic_contact_mappings'));
+    }
+};

@@ -17,6 +17,11 @@ return [
         'poll_milliseconds' => 100,
     ],
 
+    'identity' => [
+        'database_connection' => null,
+        'mappings_table' => 'mautic_contact_mappings',
+    ],
+
     'connections' => [
         'main' => [
             // Instance root URL, including a subdirectory if applicable.

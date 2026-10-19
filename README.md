@@ -7,8 +7,9 @@ MIT licensed; intended for publication as `trianity/laravel-mautic` on Packagist
 
 **Status: development package, no stable release yet.** Basic Auth and opt-in OAuth2
 connections, normalized contact reads, explicit contact writes, manual segment
-commands and raw upstream contexts are implemented. Webhooks, durable synchronization
-and reconciliation are planned, not available features.
+commands, durable identity mappings, field ownership rules and raw upstream contexts
+are implemented. Webhooks, durable synchronization and reconciliation are planned,
+not available features.
 No real Mautic server compatibility is claimed until the integration milestone.
 
 ## Requirements
@@ -147,6 +148,79 @@ generation convergence and one-time state consumption with barrier-coordinated,
 separate PHP processes over one file-backed SQLite database. This is not a memory fake.
 Equivalent MariaDB runtime behavior has not been exercised by the local suite.
 
+## Contact identity and field ownership
+
+The package can persist an explicit mapping from an opaque host contact reference to a
+Mautic contact ID. Publish the optional mapping migration separately when needed:
+
+```bash
+php artisan vendor:publish --tag=mautic-identity-migrations
+php artisan migrate
+```
+
+The host reference has a stable `scope` and `key`. Include the tenant boundary and a
+stable domain/morph alias in `scope`; the package never reads a current tenant, guard,
+User model or Eloquent model class:
+
+```php
+use Trianity\LaravelMautic\Contracts\ContactMappingRepository;
+use Trianity\LaravelMautic\Identity\LocalContactReference;
+
+$reference = new LocalContactReference('tenant:acme:crm-contact', (string) $contact->id);
+$mappings = app(ContactMappingRepository::class);
+$mapping = $mappings->claim('main', $reference, $mauticContactId);
+```
+
+Database uniqueness enforces one remote ID per local reference and one local reference
+per remote ID within each named connection. The same local reference may use a
+different remote ID on another connection. Concurrent exact claims are idempotent;
+crossed claims throw `ContactMappingConflict`. Mapping state changes and explicit
+`relink()` recovery use a generation compare-and-set, so stale callers throw
+`ContactMappingChanged`. Missing, deleted or merged contacts are recorded explicitly;
+they are never recreated, merged or relinked automatically. Email is not identity, so
+changing it does not change an established mapping.
+
+Before an initial claim, exact-email discovery returns an explicit none, unique or
+ambiguous result. A unique result still requires a host-authorized claim; ambiguous
+results remain available for review and are never silently selected:
+
+```php
+$result = $manager->connection('main')->contactDiscovery()
+    ->exactEmail($contact->email);
+
+$candidate = $result->uniqueContact(); // null for none or ambiguous
+```
+
+Field ownership is an explicit allowlist. `HostContactFields` accepts only host fields
+listed by the caller, while each `FieldRule` maps one host alias to one Mautic alias as
+host-owned, Mautic-owned or shared with an explicit host-wins/Mautic-wins decision:
+
+```php
+use Trianity\LaravelMautic\Fields\FieldMapper;
+use Trianity\LaravelMautic\Fields\FieldOwnership;
+use Trianity\LaravelMautic\Fields\FieldRule;
+use Trianity\LaravelMautic\Fields\HostContactFields;
+use Trianity\LaravelMautic\Fields\SharedFieldResolution;
+
+$mapper = new FieldMapper(
+    new FieldRule('first_name', 'firstname', FieldOwnership::Host),
+    new FieldRule('company', 'company', FieldOwnership::Mautic),
+    new FieldRule('phone', 'phone', FieldOwnership::Shared, SharedFieldResolution::HostWins),
+);
+
+$resolution = $mapper->resolve(
+    HostContactFields::fromArray($explicitHostFields, ['first_name', 'company', 'phone']),
+    $mauticContact,
+);
+```
+
+Resolved values distinguish `unchanged`, explicit `clear` and `set`; unchanged values
+are omitted from `outboundValues()` and `inboundValues()`. DNC, consent evidence,
+tags and segment membership are rejected from generic field rules and remain separate
+host workflows. The mapper never calls `Model::toArray()` and does not send changes.
+Task 05 owns durable delivery. The schema and concurrency decision is documented in
+[docs/decisions/001-contact-identity-storage.md](docs/decisions/001-contact-identity-storage.md).
+
 ## Normalized contact reads
 
 ```php
@@ -186,8 +260,8 @@ same `Contracts\ContactReader` interface and can configure contacts, searches,
 memberships and the next normalized failure.
 
 Before exposing reads to a subscriber, the host application must authorize access to
-the requested local contact and verify the local-to-remote identity. A remote ID,
-email address or segment membership is not proof of identity or authorization.
+the requested local contact and verify the local-to-remote mapping. A remote ID, email
+address or segment membership is not proof of identity or authorization.
 
 ## Explicit contact writes
 

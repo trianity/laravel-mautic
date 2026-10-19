@@ -14,15 +14,17 @@
 - Opt-in OAuth2 authorization-code and refresh-token lifecycle with encrypted durable
   per-connection versioned tokens, host-context-bound one-time callback state and
   database-shared callback/refresh locking.
+- Model-independent, connection-scoped contact identity mappings, exact-email
+  discovery and explicit host/Mautic/shared field ownership resolution.
 - Pest unit/feature tests, Testbench, Pint, Larastan level 8, CI matrix.
 - Ordered implementation prompts and architecture/release/contribution guidance.
 
 ## Not implemented
 
-Local identity mappings, durable outbox/inbox, webhook endpoint,
-reconciliation, consent workflows and live Mautic integration tests. Remote deletion
-and general DNC removal are not exposed. No migration runs implicitly and no automatic
-model events exist. No release tag or Packagist publication exists.
+Durable outbox/inbox, webhook endpoint, reconciliation, consent workflows and live
+Mautic integration tests. Remote deletion and general DNC removal are not exposed. No
+migration runs implicitly and no automatic model events exist. No release tag or
+Packagist publication exists.
 
 ## Verification
 
@@ -32,9 +34,42 @@ Tests exercise the real SDK with fake HTTP, not a real Mautic installation.
 
 ## Next task
 
-Review and select the next milestone. Model-independent identity mapping in
-`prompts/04-contact-identity.md` is next in roadmap order.
+Review and select the next milestone. Durable outgoing synchronization in
+`prompts/05-outbox.md` is next in roadmap order.
 Inspect the selected task's design gates before implementation.
+
+## Contact identity and field ownership — 2026-10-19
+
+Recorded the schema, uniqueness, tenancy, concurrency and supported-database decision
+in `docs/decisions/001-contact-identity-storage.md` before implementing storage. The
+core uses an opaque host-defined `(scope, key)` reference and does not depend on User,
+a guard, Eloquent or a tenant package. The optional publishable mapping table enforces
+unique local and remote identity per named connection. Atomic claims are idempotent
+only for the exact pair; crossed claims conflict. State changes and explicit relinking
+use generation compare-and-set. Missing, deleted and merged observations never trigger
+automatic creation, selection or relinking.
+
+`contactDiscovery()->exactEmail()` uses the real SDK structured equality request and
+returns explicit none, unique or ambiguous results without claiming a mapping. Email
+is discovery data rather than identity. `FieldMapper` combines explicit host and
+Mautic aliases with host-owned, Mautic-owned or explicitly resolved shared ownership.
+It retains unchanged, clear and set intent and rejects DNC, consent, tags, segments and
+server-managed state from generic mapping. It does not deliver updates; that remains
+Task 05.
+
+Focused tests include a host-style Contact fixture with no User/guard dependency,
+connection isolation, crossed claims, versioned recovery, merged-state review,
+real-SDK exact-email ambiguity and allowlisted ownership. The concurrency integration
+test starts two barrier-coordinated PHP processes that race different remote IDs for
+one local reference over the same file-backed SQLite database; exactly one claim wins
+and the other conflicts. This is not a memory fake. SQLite is runtime-proven; MariaDB
+was not run locally.
+
+Local `composer check` passed with strict Composer validation, Pint, Larastan level 8
+and 107 tests / 378 assertions. It ran in the approved unrestricted environment because
+PHPStan's loopback TCP server is unreliable in the local sandbox. No live Mautic or
+production endpoint was called, and the remote PHP/Laravel matrix was not rerun for
+these uncommitted changes.
 
 ## OAuth2 lifecycle — 2026-10-19
 

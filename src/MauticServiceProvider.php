@@ -9,6 +9,7 @@ use Illuminate\Support\ServiceProvider;
 use Trianity\LaravelMautic\Contracts\AuthenticationFactory;
 use Trianity\LaravelMautic\Contracts\Clock;
 use Trianity\LaravelMautic\Contracts\ConnectionFactory;
+use Trianity\LaravelMautic\Contracts\ContactMappingRepository;
 use Trianity\LaravelMautic\Contracts\HttpClientFactory;
 use Trianity\LaravelMautic\Contracts\OAuthClientCredentialsProvider;
 use Trianity\LaravelMautic\Contracts\OAuthRefreshLock;
@@ -16,6 +17,7 @@ use Trianity\LaravelMautic\Contracts\OAuthStateRepository;
 use Trianity\LaravelMautic\Contracts\OAuthTokenEndpoint;
 use Trianity\LaravelMautic\Contracts\OAuthTokenRepository;
 use Trianity\LaravelMautic\Http\GuzzleHttpClientFactory;
+use Trianity\LaravelMautic\Identity\DatabaseContactMappingRepository;
 use Trianity\LaravelMautic\OAuth\DatabaseOAuthStateRepository;
 use Trianity\LaravelMautic\OAuth\DatabaseOAuthTokenRepository;
 use Trianity\LaravelMautic\OAuth\DatabaseRefreshLock;
@@ -38,6 +40,16 @@ final class MauticServiceProvider extends ServiceProvider
         $this->app->bindIf(OAuthClientCredentialsProvider::class, EnvironmentOAuthClientCredentialsProvider::class);
         $this->app->bindIf(OAuthTokenEndpoint::class, HttpOAuthTokenEndpoint::class);
         $this->app->bindIf(AuthenticationFactory::class, ApiLibraryAuthenticationFactory::class);
+        $this->app->singletonIf(ContactMappingRepository::class, function ($app): ContactMappingRepository {
+            $connection = $app['config']->get('mautic.identity.database_connection');
+            $table = $app['config']->get('mautic.identity.mappings_table', 'mautic_contact_mappings');
+
+            return new DatabaseContactMappingRepository(
+                $app['db'],
+                is_string($connection) && $connection !== '' ? $connection : null,
+                is_string($table) && $table !== '' ? $table : 'mautic_contact_mappings',
+            );
+        });
         $this->app->singletonIf(OAuthTokenRepository::class, function ($app): OAuthTokenRepository {
             return new DatabaseOAuthTokenRepository(
                 $app['db'],
@@ -99,6 +111,11 @@ final class MauticServiceProvider extends ServiceProvider
             $this->publishes([
                 __DIR__.'/../database/migrations/create_mautic_oauth_storage.php.stub' => database_path('migrations/2026_10_19_000000_create_mautic_oauth_storage.php'),
             ], 'mautic-migrations');
+            $identityMigration = [
+                __DIR__.'/../database/migrations/create_mautic_contact_mappings.php.stub' => database_path('migrations/2026_10_19_010000_create_mautic_contact_mappings.php'),
+            ];
+            $this->publishes($identityMigration, 'mautic-migrations');
+            $this->publishes($identityMigration, 'mautic-identity-migrations');
         }
     }
 

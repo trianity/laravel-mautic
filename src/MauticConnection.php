@@ -9,9 +9,11 @@ use Mautic\Api\Contacts;
 use Mautic\Api\Segments;
 use Mautic\Auth\AuthInterface;
 use Mautic\MauticApi;
+use Trianity\LaravelMautic\Contracts\ContactDiscovery;
 use Trianity\LaravelMautic\Contracts\ContactReader;
 use Trianity\LaravelMautic\Contracts\ContactWriter;
 use Trianity\LaravelMautic\Contracts\OAuthAuthenticationFailureProvider;
+use Trianity\LaravelMautic\Support\SdkContactDiscovery;
 use Trianity\LaravelMautic\Support\SdkContactReader;
 use Trianity\LaravelMautic\Support\SdkContactWriter;
 use Trianity\LaravelMautic\Support\SdkResponseBoundary;
@@ -34,6 +36,12 @@ final readonly class MauticConnection
     public function contactReads(): ContactReader
     {
         return new SdkContactReader($this->contacts(), $this->name, $this->responseBoundary());
+    }
+
+    /** Exact-email discovery with explicit zero, unique or ambiguous results. */
+    public function contactDiscovery(): ContactDiscovery
+    {
+        return new SdkContactDiscovery($this->contacts(), $this->name, $this->responseBoundary());
     }
 
     /** Package-owned, normalized explicit contact mutations. */
