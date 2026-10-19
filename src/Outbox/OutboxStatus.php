@@ -12,10 +12,11 @@ enum OutboxStatus: string
     case Completed = 'completed';
     case Failed = 'failed';
     case Ambiguous = 'ambiguous';
+    case Blocked = 'blocked';
     case Superseded = 'superseded';
 
     public function terminal(): bool
     {
-        return in_array($this, [self::Completed, self::Failed, self::Ambiguous, self::Superseded], true);
+        return in_array($this, [self::Completed, self::Failed, self::Ambiguous, self::Blocked, self::Superseded], true);
     }
 }

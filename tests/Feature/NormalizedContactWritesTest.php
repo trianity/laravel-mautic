@@ -189,6 +189,18 @@ it('retains numeric Retry-After metadata on throttled writes', function () {
         && $exception->retryAfterSeconds === 17);
 });
 
+it('ignores malformed Retry-After metadata safely', function () {
+    useContactWriteResponses([
+        new Response(429, ['Content-Type' => 'application/json', 'Retry-After' => 'next Tuesday'], '{"errors":[{"code":429,"message":"slow down"}]}'),
+    ]);
+
+    expect(fn () => app(MauticManager::class)->connection()->contactWrites()->update(
+        42,
+        ContactFields::fromArray(['firstname' => 'Ada'], ['firstname']),
+    ))->toThrow(fn (MauticWriteException $exception) => $exception->kind === FailureKind::Throttled
+        && $exception->retryAfterSeconds === null);
+});
+
 it('retains numeric Retry-After metadata on throttled duplicate preflight reads', function () {
     useContactWriteResponses([
         new Response(429, ['Content-Type' => 'application/json', 'Retry-After' => '23'], '{"errors":[{"code":429,"message":"slow down"}]}'),
@@ -198,6 +210,42 @@ it('retains numeric Retry-After metadata on throttled duplicate preflight reads'
         ContactFields::fromArray(['email' => 'person@example.test'], ['email']),
     ))->toThrow(fn (MauticReadException $exception) => $exception->kind->value === 'throttled'
         && $exception->retryAfterSeconds === 23);
+});
+
+it('preserves a first-request update connection failure instead of reading uninitialized SDK response metadata', function () {
+    useContactWriteResponses([
+        new ConnectException('Connection failed', new Request('PATCH', 'https://mautic.example.test/api/contacts/42/edit')),
+    ]);
+
+    expect(fn () => app(MauticManager::class)->connection()->contactWrites()->update(
+        42,
+        ContactFields::fromArray(['firstname' => 'Ada'], ['firstname']),
+    ))->toThrow(AmbiguousMutationOutcome::class);
+});
+
+it('preserves a first-request create preflight connection failure as a typed read failure', function () {
+    useContactWriteResponses([
+        new ConnectException('Connection failed', new Request('GET', 'https://mautic.example.test/api/contacts')),
+    ]);
+
+    expect(fn () => app(MauticManager::class)->connection()->contactWrites()->create(
+        ContactFields::fromArray(['email' => 'person@example.test'], ['email']),
+    ))->toThrow(fn (MauticReadException $exception) => $exception->kind->value === 'transport'
+        && $exception->retryAfterSeconds === null);
+});
+
+it('does not reuse response metadata after a later transport failure', function () {
+    useContactWriteResponses([
+        new Response(200, ['Content-Type' => 'application/json', 'Retry-After' => '999'], contactJson(42, ['firstname' => 'Ada'])),
+        new ConnectException('Connection failed', new Request('GET', 'https://mautic.example.test/api/contacts')),
+    ]);
+    $writer = app(MauticManager::class)->connection()->contactWrites();
+    $writer->update(42, ContactFields::fromArray(['firstname' => 'Ada'], ['firstname']));
+
+    expect(fn () => $writer->create(
+        ContactFields::fromArray(['email' => 'person@example.test'], ['email']),
+    ))->toThrow(fn (MauticReadException $exception) => $exception->kind->value === 'transport'
+        && $exception->retryAfterSeconds === null);
 });
 
 it('normalizes create and update payload errors without exposing remote messages', function (string $method) {

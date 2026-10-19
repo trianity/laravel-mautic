@@ -17,6 +17,7 @@ return new class extends Migration
             $table->id();
             $table->string('operation_id', 64)->unique();
             $table->string('connection', 191);
+            $table->char('connection_hash', 64);
             $table->string('local_scope', 191);
             $table->string('local_key', 191);
             $table->char('aggregate_hash', 64);
@@ -26,6 +27,7 @@ return new class extends Migration
             $table->text('payload');
             $table->string('status', 24);
             $table->unsignedInteger('attempts')->default(0);
+            $table->string('delivery_stage', 32)->default('recorded');
             $table->unsignedBigInteger('next_attempt_at')->nullable();
             $table->string('lease_owner', 64)->nullable();
             $table->unsignedBigInteger('lease_expires_at')->nullable();
@@ -39,6 +41,7 @@ return new class extends Migration
 
             $table->unique(['aggregate_hash', 'revision'], 'mautic_outbox_aggregate_revision_unique');
             $table->index(['status', 'next_attempt_at'], 'mautic_outbox_recovery_index');
+            $table->index(['connection_hash', 'status'], 'mautic_outbox_connection_status_index');
         });
 
         $schema->create(config('mautic.outbox.locks_table', 'mautic_outbox_locks'), function (Blueprint $table): void {
@@ -56,12 +59,20 @@ return new class extends Migration
             $table->unsignedBigInteger('created_at');
             $table->index(['operation_id', 'created_at'], 'mautic_outbox_audit_operation_index');
         });
+
+        $schema->create(config('mautic.outbox.connection_blocks_table', 'mautic_outbox_connection_blocks'), function (Blueprint $table): void {
+            $table->char('connection_hash', 64)->primary();
+            $table->string('connection', 191);
+            $table->string('reason_code', 64);
+            $table->unsignedBigInteger('created_at');
+        });
     }
 
     public function down(): void
     {
         $connection = config('mautic.outbox.database_connection');
         $schema = Schema::connection(is_string($connection) && $connection !== '' ? $connection : null);
+        $schema->dropIfExists(config('mautic.outbox.connection_blocks_table', 'mautic_outbox_connection_blocks'));
         $schema->dropIfExists(config('mautic.outbox.audits_table', 'mautic_outbox_audits'));
         $schema->dropIfExists(config('mautic.outbox.locks_table', 'mautic_outbox_locks'));
         $schema->dropIfExists(config('mautic.outbox.commands_table', 'mautic_outbox_commands'));

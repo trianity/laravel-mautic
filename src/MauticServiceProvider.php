@@ -119,6 +119,7 @@ final class MauticServiceProvider extends ServiceProvider
                 $this->outboxTable('commands_table', 'mautic_outbox_commands'),
                 $this->outboxTable('locks_table', 'mautic_outbox_locks'),
                 $this->outboxTable('audits_table', 'mautic_outbox_audits'),
+                $this->outboxTable('connection_blocks_table', 'mautic_outbox_connection_blocks'),
             );
         });
         $this->app->singleton(OutboxDispatcher::class, function ($app): OutboxDispatcher {
@@ -134,7 +135,8 @@ final class MauticServiceProvider extends ServiceProvider
         $this->app->singleton(OutboxPoller::class);
         $this->app->singleton(OutboxProcessor::class, function ($app): OutboxProcessor {
             $leaseSeconds = (int) $app['config']->get('mautic.outbox.lease_seconds', 30);
-            $this->validateOutboxLease($app['config'], $leaseSeconds);
+            $operationBudgetSeconds = (int) $app['config']->get('mautic.outbox.operation_budget_seconds', 20);
+            $this->validateOutboxLease($app['config'], $leaseSeconds, $operationBudgetSeconds);
 
             return new OutboxProcessor(
                 $app->make(DatabaseOutboxStore::class),
@@ -168,6 +170,7 @@ final class MauticServiceProvider extends ServiceProvider
             $this->publishes($identityMigration, 'mautic-identity-migrations');
             $outboxMigration = [
                 __DIR__.'/../database/migrations/create_mautic_contact_outbox.php.stub' => database_path('migrations/2026_10_19_020000_create_mautic_contact_outbox.php'),
+                __DIR__.'/../database/migrations/correct_mautic_contact_outbox.php.stub' => database_path('migrations/2026_10_19_021000_correct_mautic_contact_outbox.php'),
             ];
             $this->publishes($outboxMigration, 'mautic-migrations');
             $this->publishes($outboxMigration, 'mautic-outbox-migrations');
@@ -195,8 +198,11 @@ final class MauticServiceProvider extends ServiceProvider
         return is_string($table) && $table !== '' ? $table : $default;
     }
 
-    private function validateOutboxLease(Repository $config, int $leaseSeconds): void
+    private function validateOutboxLease(Repository $config, int $leaseSeconds, int $operationBudgetSeconds): void
     {
+        if ($operationBudgetSeconds < 1 || $leaseSeconds <= $operationBudgetSeconds) {
+            throw new InvalidConfiguration('The outbox lease must be longer than the declared complete-operation budget.');
+        }
         $connections = $config->get('mautic.connections', []);
         if (! is_array($connections)) {
             throw new InvalidConfiguration('Mautic connections must be a named array.');
@@ -206,8 +212,8 @@ final class MauticServiceProvider extends ServiceProvider
                 continue;
             }
             $timeout = $values['timeout'] ?? 10;
-            if ((is_int($timeout) || is_float($timeout)) && $leaseSeconds <= $timeout) {
-                throw new InvalidConfiguration('The outbox lease must be longer than every Mautic request timeout.');
+            if ((is_int($timeout) || is_float($timeout)) && $operationBudgetSeconds < $timeout) {
+                throw new InvalidConfiguration('The outbox operation budget must cover every individual Mautic request timeout.');
             }
         }
     }

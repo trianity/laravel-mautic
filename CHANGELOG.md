@@ -36,6 +36,15 @@
 
 ### Fixed
 
+- Preserve every partial outbox revision in sequential aggregate order, including
+  create-before-update prerequisites and explicit blocking behind unresolved commands.
+- Treat expired in-flight operations and uncertain create persistence as reconciliation
+  requirements, retaining remote IDs when available and preventing unsafe later delivery.
+- Preserve typed OAuth blockers and transient token-endpoint metadata, and honor valid
+  `Retry-After` values as minimum delays rather than capping them to local backoff.
+- Avoid uninitialized or stale upstream SDK response headers after transport failures.
+- Add a published outbox correction migration for existing Task 05 installations.
+
 - Enforce byte-exact contact identities with collation-independent tuple hashes,
   original-value verification and an explicit validating upgrade migration.
 - Normalize structured email query values consistently for discovery and duplicate
@@ -48,5 +57,5 @@
   newer token rotations, classify token endpoint failures, and canonicalize instance
   root/API URLs for root and subdirectory installations.
 
-No stable release, Packagist publication, durable synchronization, remote deletion or
-general DNC-removal API is included. OAuth2 client-credentials is not implemented.
+No stable release, Packagist publication, webhook inbox, remote deletion or general
+DNC-removal API is included. OAuth2 client-credentials is not implemented.

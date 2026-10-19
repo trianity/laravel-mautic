@@ -13,7 +13,11 @@ use Trianity\LaravelMautic\Exceptions\ContactMappingConflict;
 use Trianity\LaravelMautic\Exceptions\MauticReadException;
 use Trianity\LaravelMautic\Exceptions\MauticWriteException;
 use Trianity\LaravelMautic\Exceptions\OAuthAuthenticationException;
+use Trianity\LaravelMautic\Exceptions\OAuthReauthorizationRequired;
+use Trianity\LaravelMautic\Exceptions\OAuthTokenPersistenceUncertain;
+use Trianity\LaravelMautic\Exceptions\OAuthTokenRequestFailed;
 use Trianity\LaravelMautic\Identity\RemoteContactState;
+use Trianity\LaravelMautic\OAuth\OAuthTokenFailureKind;
 use Trianity\LaravelMautic\Read\ReadFailureKind;
 use Trianity\LaravelMautic\Write\ContactFields;
 use Trianity\LaravelMautic\Write\FailureKind;
@@ -40,6 +44,9 @@ final readonly class OutboxProcessor
         if ($initial === null || $initial->status->terminal()) {
             return;
         }
+        if ($this->store->connectionBlocked($initial->connection)) {
+            return;
+        }
         $owner = bin2hex(random_bytes(16));
         if (! $this->store->acquire($initial->aggregateHash, $owner, $this->leaseSeconds)) {
             return;
@@ -50,11 +57,12 @@ final readonly class OutboxProcessor
             if ($current === null || $current->status->terminal()) {
                 return;
             }
+            if ($this->store->connectionBlocked($current->connection)) {
+                return;
+            }
             if ($current->status === OutboxStatus::Processing
-                && ($current->leaseExpiresAt ?? PHP_INT_MAX) <= $this->clock->now()
-                && $current->operation === OutboxOperation::Create
-                && $this->mappings->find($current->connection, $current->localReference) === null) {
-                $this->store->ambiguous($operationId, null, 'create_worker_lost');
+                && ($current->leaseExpiresAt ?? PHP_INT_MAX) <= $this->clock->now()) {
+                $this->store->markExpiredOperationAmbiguous($operationId);
 
                 return;
             }
@@ -77,6 +85,7 @@ final readonly class OutboxProcessor
                     $remoteId = $mapping->remoteId;
                 } elseif ($record->operation === OutboxOperation::Create) {
                     $remoteId = $this->transport->create($record->connection, $fields);
+                    $this->store->recordRemoteSuccess($operationId, $owner, $remoteId);
                 } else {
                     $this->store->fail($operationId, $owner, FailureKind::TargetNotFound->value, null, 'mapping_missing');
 
@@ -88,6 +97,18 @@ final readonly class OutboxProcessor
                 return;
             } catch (MauticWriteException $exception) {
                 $this->handleFailure($record, $owner, $exception);
+
+                return;
+            } catch (OAuthTokenPersistenceUncertain) {
+                $this->store->blockConnection($operationId, $owner, 'oauth_token_persistence_uncertain');
+
+                return;
+            } catch (OAuthReauthorizationRequired) {
+                $this->store->blockConnection($operationId, $owner, 'oauth_reauthorization_required');
+
+                return;
+            } catch (OAuthTokenRequestFailed $exception) {
+                $this->handleOAuthTokenFailure($record, $owner, $exception);
 
                 return;
             } catch (OAuthAuthenticationException) {
@@ -123,7 +144,11 @@ final readonly class OutboxProcessor
                 try {
                     $this->mappings->claim($record->connection, $record->localReference, $remoteId);
                 } catch (ContactMappingConflict) {
-                    $this->store->ambiguous($operationId, $owner, 'create_mapping_conflict');
+                    $this->store->ambiguous($operationId, $owner, 'create_mapping_conflict', $remoteId);
+
+                    return;
+                } catch (Throwable) {
+                    $this->store->ambiguous($operationId, $owner, 'create_mapping_persistence_uncertain', $remoteId);
 
                     return;
                 }
@@ -132,7 +157,12 @@ final readonly class OutboxProcessor
         } catch (Throwable $exception) {
             $record = $this->store->get($operationId);
             if ($record?->status === OutboxStatus::Processing && $record->leaseOwner === $owner) {
-                $this->store->fail($operationId, $owner, FailureKind::UnexpectedResponse->value, null, 'processor_failure');
+                $this->store->ambiguous(
+                    $operationId,
+                    $owner,
+                    'local_completion_uncertain',
+                    $record->remoteId,
+                );
             }
 
             throw $exception;
@@ -150,6 +180,9 @@ final readonly class OutboxProcessor
                 FailureKind::Timeout,
                 FailureKind::Transport,
                 FailureKind::DuplicateContact,
+                FailureKind::RemoteServer,
+                FailureKind::MalformedResponse,
+                FailureKind::UnexpectedResponse,
             ], true)) {
             $this->store->ambiguous($record->operationId, $owner, 'create_outcome_ambiguous');
 
@@ -209,7 +242,7 @@ final readonly class OutboxProcessor
 
         $delay = $retryAfter === null
             ? min($this->maximumDelaySeconds, (5 * (2 ** max(0, $record->attempts - 1))) + (crc32($record->operationId) % 3))
-            : min($this->maximumDelaySeconds, max(1, $retryAfter));
+            : max(1, $retryAfter);
         $this->store->retry(
             $record->operationId,
             $owner,
@@ -217,6 +250,33 @@ final readonly class OutboxProcessor
             $kind->value,
             $httpStatus,
             $errorCode,
+        );
+    }
+
+    private function handleOAuthTokenFailure(
+        OutboxRecord $record,
+        string $owner,
+        OAuthTokenRequestFailed $exception,
+    ): void {
+        if (in_array($exception->kind, [OAuthTokenFailureKind::InvalidClient, OAuthTokenFailureKind::MalformedResponse, OAuthTokenFailureKind::ClientRequest], true)) {
+            $this->store->blockConnection($record->operationId, $owner, 'oauth_token_endpoint_'.$exception->kind->value);
+
+            return;
+        }
+
+        $kind = match ($exception->kind) {
+            OAuthTokenFailureKind::Throttled => FailureKind::Throttled,
+            OAuthTokenFailureKind::RemoteServer => FailureKind::RemoteServer,
+            OAuthTokenFailureKind::Network => FailureKind::Transport,
+        };
+        $this->scheduleRetryOrFail(
+            $record,
+            $owner,
+            $kind,
+            $exception->status,
+            $exception->retryAfterSeconds,
+            'oauth_token_endpoint_'.$exception->kind->value,
+            allowCreateTransportRetry: true,
         );
     }
 }

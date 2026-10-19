@@ -119,23 +119,26 @@ row eligible for the bounded recovery poller. Stable operation identity and aggr
 revision constraints make exact recording idempotent and reject conflicting reuse.
 
 A database lease over the byte-exact connection/local-reference hash serializes workers
-without holding a transaction across HTTP. Workers reload after lease acquisition,
-ignore duplicate jobs and supersede older revisions when a newer command exists. The
-lease must exceed all configured request timeouts. SQLite proves shared multi-process
-coordination but does not model InnoDB row-lock scheduling; a disposable MariaDB suite
-checks the published schema, collation-independent aggregates and shared lease contract.
+without holding a transaction across HTTP. Workers reload after lease acquisition and
+deliver all stored revisions sequentially; incomplete lower revisions block newer work.
+The lease must exceed a declared complete-operation budget, but it is not remote fencing.
+An expired in-flight operation becomes ambiguous and blocks later delivery until
+reconciliation. SQLite proves shared multi-process coordination and this expiry protocol
+but does not model InnoDB row-lock scheduling; a disposable MariaDB suite checks fresh
+and upgrade migrations, collation-independent aggregates and the shared lease contract.
 
-Idempotent field updates can retry bounded authentication, throttling, server, timeout
-and transport failures. Numeric `Retry-After` is propagated from the SDK response and
-honored within the configured maximum delay. Validation, malformed responses, missing
-targets and exhausted attempts are retained. Stored diagnostics are enumerated and do
-not contain upstream messages.
+Idempotent field updates can retry bounded transient authentication, throttling, server,
+timeout and transport failures. Numeric `Retry-After` is propagated from the current SDK
+response and is a minimum delay even above the local backoff cap. OAuth token uncertainty
+or required reauthorization blocks the named connection until audited operator resume.
+Validation, missing targets and exhausted attempts are retained. Stored diagnostics are
+enumerated and do not contain upstream messages.
 
-A create with transport uncertainty or an expired processing lease and no durable
-mapping becomes `ambiguous`; it is not automatically sent again. If identity was already
-committed, recovery updates the mapped contact. Otherwise an operator must explicitly
-claim a verified remote ID or confirm remote absence before retry, and every operator
-decision is audited. Full details are in
+A create with a 5xx response, transport uncertainty, malformed success or local
+persistence uncertainty becomes `ambiguous`; it is not automatically sent again. Its
+returned remote ID is retained when available. An operator must explicitly claim a
+verified remote ID or confirm remote absence before retry, and every operator decision
+is audited. Full details are in
 `docs/decisions/002-outbox-delivery.md`.
 
 ## Incoming delivery and reconciliation (planned)

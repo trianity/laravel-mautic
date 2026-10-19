@@ -12,6 +12,7 @@ final readonly class OutboxRecord
     public function __construct(
         public string $operationId,
         public string $connection,
+        public string $connectionHash,
         public LocalContactReference $localReference,
         public string $aggregateHash,
         public int $revision,
@@ -20,6 +21,7 @@ final readonly class OutboxRecord
         public array $payload,
         public OutboxStatus $status,
         public int $attempts,
+        public OutboxDeliveryStage $deliveryStage,
         public ?int $nextAttemptAt,
         public ?string $leaseOwner,
         public ?int $leaseExpiresAt,

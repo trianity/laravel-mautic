@@ -17,7 +17,8 @@
 - Model-independent, connection-scoped contact identity mappings, exact-email
   discovery and explicit host/Mautic/shared field ownership resolution.
 - Transactional outgoing contact outbox with after-commit dispatch, recovery polling,
-  aggregate leases, revision ordering and audited ambiguous-create recovery.
+  sequential aggregate revisions, conservative lease-expiry recovery, connection-level
+  OAuth blockers and audited ambiguous-create recovery.
 - Pest unit/feature tests, Testbench, Pint, Larastan level 8, CI matrix.
 - Ordered implementation prompts and architecture/release/contribution guidance.
 
@@ -80,6 +81,44 @@ case-insensitive MariaDB database: contact identity passed with 4 assertions, an
 published outbox migration/shared lease contract passed with 6 assertions. No live
 Mautic or production endpoint was called. Remote PHP/Laravel CI was not rerun because no
 authorized push occurred.
+
+## Durable outgoing synchronization correction — 2026-10-19
+
+Task 05A replaces newer-wins supersession with strict per-aggregate sequential delivery.
+Every lower revision must complete before a higher revision starts, preserving disjoint
+partial changes and create-before-update prerequisites. Failed, delayed, blocked and
+ambiguous commands stop the sequence until their documented operator recovery succeeds.
+The upgrade migration restores retained legacy `superseded` rows to pending and adds
+connection hashes, delivery stages and durable OAuth connection blockers.
+
+Lease expiry is no longer treated as proof that a remote request stopped. Any expired
+in-flight operation becomes ambiguous and blocks later revisions. The configured lease
+must exceed a declared complete-operation budget, but Mautic has no remote fencing or
+conditional-write primitive, so exactly-once delivery and guaranteed remote ordering
+are not claimed. Two controlled PHP processes sharing one SQLite file prove that a
+newer revision is not sent while an expired older worker may still finish remotely.
+
+Create 5xx and other mutation uncertainty are retained for reconciliation. A returned
+remote ID is persisted before mapping and retained through mapping/local persistence
+failures when storage is available. Read-only preflight failures remain safely retryable.
+OAuth token-persistence uncertainty and reauthorization requirements durably block the
+connection until an audited `resumeAuthentication()` after external resolution.
+Transient token endpoint failures retain status and Retry-After; valid server delays may
+exceed the local backoff cap.
+
+The installed SDK adapter now reads response headers only when the current result proves
+an HTTP response exists. First-request transport failures retain typed exceptions, and
+headers from a previous response cannot supply stale retry metadata.
+
+Focused correction coverage includes sequential partial updates, create prerequisites,
+out-of-order jobs, blockers, create 5xx, mapping persistence failure with remote-ID
+evidence, OAuth blocker/resume behavior, Retry-After minimums, actual SDK transport
+failures, the published upgrade, and real multi-process shared-storage lease expiry.
+Local `composer check` passed strict Composer validation, Pint, Larastan level 8 and
+142 tests / 580 assertions; three opt-in MariaDB tests were skipped in the default
+environment. The disposable MariaDB outbox suite then passed fresh and upgrade
+migrations with 11 assertions. No live Mautic or host application was called. Remote
+PHP/Laravel CI was not rerun because no push occurred.
 
 ## Contact identity correction — 2026-10-19
 

@@ -42,6 +42,15 @@ final readonly class OutboxOperator
         $this->store->operatorRetry($operationId, $actor, $reasonCode, false);
     }
 
+    public function resumeAuthentication(string $connection, string $actor, string $reasonCode): void
+    {
+        $this->validateAudit($actor, $reasonCode);
+        if (trim($connection) === '' || strlen($connection) > 191) {
+            throw new RuntimeException('A valid Mautic connection name is required.');
+        }
+        $this->store->resumeConnection($connection, $actor, $reasonCode);
+    }
+
     private function validateAudit(string $actor, string $reasonCode): void
     {
         if (trim($actor) === '' || strlen($actor) > 64 || trim($reasonCode) === '' || strlen($reasonCode) > 64) {

@@ -41,7 +41,7 @@ final readonly class SdkContactWriter implements ContactWriter
             $rawResponse,
             $operation,
             $this->connection,
-            retryAfterSeconds: $this->retryAfterSeconds($this->contacts->getResponseHeaders()),
+            retryAfterSeconds: $this->retryAfterForResponse($rawResponse, $this->contacts),
         );
 
         if (! array_key_exists('contact', $response)) {
@@ -60,7 +60,7 @@ final readonly class SdkContactWriter implements ContactWriter
             $rawResponse,
             $operation,
             $this->connection,
-            retryAfterSeconds: $this->retryAfterSeconds($this->contacts->getResponseHeaders()),
+            retryAfterSeconds: $this->retryAfterForResponse($rawResponse, $this->contacts),
         );
 
         if (! array_key_exists('contact', $response)) {
@@ -145,7 +145,7 @@ final readonly class SdkContactWriter implements ContactWriter
                 $rawResponse,
                 ReadOperation::SearchContacts,
                 $this->connection,
-                $this->retryAfterSeconds($this->contacts->getResponseHeaders()),
+                $this->retryAfterForResponse($rawResponse, $this->contacts),
             );
 
             if (! is_int($response['total'] ?? null) || ! is_array($response['contacts'] ?? null)) {
@@ -217,7 +217,7 @@ final readonly class SdkContactWriter implements ContactWriter
             $response,
             $operation,
             $this->connection,
-            retryAfterSeconds: $this->retryAfterSeconds($this->segments->getResponseHeaders()),
+            retryAfterSeconds: $this->retryAfterForResponse($response, $this->segments),
         );
     }
 
@@ -310,5 +310,21 @@ final readonly class SdkContactWriter implements ContactWriter
         }
 
         return null;
+    }
+
+    /** @param array<mixed> $response */
+    private function retryAfterForResponse(array $response, Contacts|Segments $api): ?int
+    {
+        $errors = $response['errors'] ?? null;
+        if (! is_array($errors) || $errors === []) {
+            return null;
+        }
+        $first = reset($errors);
+        $status = is_array($first) ? $this->boundary->statusCode($first['code'] ?? null) : null;
+        if ($status === null || $status < 100 || $status > 599) {
+            return null;
+        }
+
+        return $this->retryAfterSeconds($api->getResponseHeaders());
     }
 }

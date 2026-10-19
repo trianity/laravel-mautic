@@ -24,6 +24,7 @@ final readonly class DatabaseOutboxStore
         private string $commandsTable = 'mautic_outbox_commands',
         private string $locksTable = 'mautic_outbox_locks',
         private string $auditsTable = 'mautic_outbox_audits',
+        private string $connectionBlocksTable = 'mautic_outbox_connection_blocks',
     ) {}
 
     public function record(ContactSyncCommand $command): OutboxRecord
@@ -34,6 +35,7 @@ final readonly class DatabaseOutboxStore
             $inserted = $this->database()->table($this->commandsTable)->insertOrIgnore([
                 'operation_id' => $command->operationId,
                 'connection' => $command->connection,
+                'connection_hash' => ContactIdentityHasher::connection($command->connection),
                 'local_scope' => $command->localReference->scope,
                 'local_key' => $command->localReference->key,
                 'aggregate_hash' => $command->aggregateHash(),
@@ -43,6 +45,7 @@ final readonly class DatabaseOutboxStore
                 'payload' => $payload,
                 'status' => OutboxStatus::Pending->value,
                 'attempts' => 0,
+                'delivery_stage' => OutboxDeliveryStage::Recorded->value,
                 'created_at' => $now,
                 'updated_at' => $now,
             ]);
@@ -108,6 +111,11 @@ final readonly class DatabaseOutboxStore
                             ->where('lease_expires_at', '<=', $now);
                     });
             })
+            ->whereNotExists(function ($query): void {
+                $query->selectRaw('1')
+                    ->from($this->connectionBlocksTable)
+                    ->whereColumn($this->connectionBlocksTable.'.connection_hash', $this->commandsTable.'.connection_hash');
+            })
             ->orderBy('id')
             ->limit($limit)
             ->pluck('operation_id');
@@ -156,10 +164,9 @@ final readonly class DatabaseOutboxStore
         }
         if ($this->database()->table($this->commandsTable)
             ->where('aggregate_hash', $current->aggregateHash)
-            ->where('revision', '>', $current->revision)
+            ->where('revision', '<', $current->revision)
+            ->where('status', '!=', OutboxStatus::Completed->value)
             ->exists()) {
-            $this->transition($current->operationId, OutboxStatus::Superseded, null, null, 'newer_revision', null, null);
-
             return null;
         }
 
@@ -169,6 +176,7 @@ final readonly class DatabaseOutboxStore
             ->update([
                 'status' => OutboxStatus::Processing->value,
                 'attempts' => $current->attempts + 1,
+                'delivery_stage' => OutboxDeliveryStage::OperationInFlight->value,
                 'next_attempt_at' => null,
                 'lease_owner' => $owner,
                 'lease_expires_at' => $now + $leaseSeconds,
@@ -184,6 +192,7 @@ final readonly class DatabaseOutboxStore
             'status' => OutboxStatus::Completed->value,
             'remote_id' => $remoteId,
             'completed_at' => $this->clock->now(),
+            'delivery_stage' => OutboxDeliveryStage::RemoteSucceeded->value,
             'next_attempt_at' => null,
             'lease_owner' => null,
             'lease_expires_at' => null,
@@ -194,6 +203,17 @@ final readonly class DatabaseOutboxStore
         ]);
         if ($updated !== 1) {
             throw new RuntimeException('The outbox completion lease was lost.');
+        }
+    }
+
+    public function recordRemoteSuccess(string $operationId, string $owner, int $remoteId): void
+    {
+        if ($this->owned($operationId, $owner)->update([
+            'remote_id' => $remoteId,
+            'delivery_stage' => OutboxDeliveryStage::RemoteSucceeded->value,
+            'updated_at' => $this->timestamp(),
+        ]) !== 1) {
+            throw new RuntimeException('The outbox remote-success evidence lease was lost.');
         }
     }
 
@@ -218,14 +238,111 @@ final readonly class DatabaseOutboxStore
         $this->ownedTransition($operationId, $owner, OutboxStatus::Failed, $failureKind, $httpStatus, $errorCode, null);
     }
 
-    public function ambiguous(string $operationId, ?string $owner, string $errorCode): void
+    public function ambiguous(string $operationId, ?string $owner, string $errorCode, ?int $remoteId = null): void
     {
         if ($owner === null) {
-            $this->transition($operationId, OutboxStatus::Ambiguous, 'ambiguous_outcome', null, $errorCode, null, null);
+            $this->transition($operationId, OutboxStatus::Ambiguous, 'ambiguous_outcome', null, $errorCode, null, $remoteId);
 
             return;
         }
-        $this->ownedTransition($operationId, $owner, OutboxStatus::Ambiguous, 'ambiguous_outcome', null, $errorCode, null);
+        $this->ownedTransition($operationId, $owner, OutboxStatus::Ambiguous, 'ambiguous_outcome', null, $errorCode, null, $remoteId);
+    }
+
+    public function markExpiredOperationAmbiguous(string $operationId): bool
+    {
+        return $this->database()->table($this->commandsTable)
+            ->where('operation_id', $operationId)
+            ->where('status', OutboxStatus::Processing->value)
+            ->where('lease_expires_at', '<=', $this->clock->now())
+            ->update([
+                'status' => OutboxStatus::Ambiguous->value,
+                'lease_owner' => null,
+                'lease_expires_at' => null,
+                'last_failure_kind' => 'ambiguous_outcome',
+                'last_error_code' => 'operation_worker_lost',
+                'updated_at' => $this->timestamp(),
+            ]) === 1;
+    }
+
+    public function connectionBlocked(string $connection): bool
+    {
+        $row = $this->database()->table($this->connectionBlocksTable)
+            ->where('connection_hash', ContactIdentityHasher::connection($connection))
+            ->first();
+
+        if ($row === null) {
+            return false;
+        }
+        if (($row->connection ?? null) !== $connection) {
+            throw new RuntimeException('Stored outbox connection block identity is invalid.');
+        }
+
+        return true;
+    }
+
+    public function blockConnection(string $operationId, string $owner, string $reasonCode): void
+    {
+        $record = $this->get($operationId);
+        if ($record === null) {
+            throw new RuntimeException('The outbox command does not exist.');
+        }
+        $this->database()->transaction(function () use ($record, $owner, $reasonCode): void {
+            $this->database()->table($this->connectionBlocksTable)->insertOrIgnore([
+                'connection_hash' => $record->connectionHash,
+                'connection' => $record->connection,
+                'reason_code' => $reasonCode,
+                'created_at' => $this->clock->now(),
+            ]);
+            if (! $this->connectionBlocked($record->connection)) {
+                throw new RuntimeException('The outbox connection block could not be persisted.');
+            }
+            $this->ownedTransition(
+                $record->operationId,
+                $owner,
+                OutboxStatus::Blocked,
+                'authentication',
+                null,
+                $reasonCode,
+                null,
+            );
+        });
+    }
+
+    public function resumeConnection(string $connection, string $actor, string $reasonCode): void
+    {
+        $connectionHash = ContactIdentityHasher::connection($connection);
+        $this->database()->transaction(function () use ($connection, $connectionHash, $actor, $reasonCode): void {
+            $block = $this->database()->table($this->connectionBlocksTable)
+                ->where('connection_hash', $connectionHash)
+                ->first();
+            if ($block === null || ($block->connection ?? null) !== $connection) {
+                throw new RuntimeException('The Mautic connection is not blocked.');
+            }
+            $operationIds = $this->database()->table($this->commandsTable)
+                ->where('connection_hash', $connectionHash)
+                ->where('status', OutboxStatus::Blocked->value)
+                ->pluck('operation_id');
+            $this->database()->table($this->connectionBlocksTable)
+                ->where('connection_hash', $connectionHash)
+                ->delete();
+            $this->database()->table($this->commandsTable)
+                ->where('connection_hash', $connectionHash)
+                ->where('status', OutboxStatus::Blocked->value)
+                ->update([
+                    'status' => OutboxStatus::Pending->value,
+                    'delivery_stage' => OutboxDeliveryStage::Recorded->value,
+                    'next_attempt_at' => null,
+                    'last_failure_kind' => null,
+                    'last_http_status' => null,
+                    'last_error_code' => null,
+                    'updated_at' => $this->timestamp(),
+                ]);
+            foreach ($operationIds as $operationId) {
+                if (is_string($operationId)) {
+                    $this->audit($operationId, 'resume_authentication', $actor, $reasonCode);
+                }
+            }
+        });
     }
 
     public function operatorComplete(string $operationId, int $remoteId, string $actor, string $reasonCode): void
@@ -237,7 +354,13 @@ final readonly class DatabaseOutboxStore
                 ->update([
                     'status' => OutboxStatus::Completed->value,
                     'remote_id' => $remoteId,
+                    'delivery_stage' => OutboxDeliveryStage::RemoteSucceeded->value,
                     'completed_at' => $this->clock->now(),
+                    'lease_owner' => null,
+                    'lease_expires_at' => null,
+                    'last_failure_kind' => null,
+                    'last_http_status' => null,
+                    'last_error_code' => null,
                     'updated_at' => $this->timestamp(),
                 ]);
             if ($updated !== 1) {
@@ -256,9 +379,11 @@ final readonly class DatabaseOutboxStore
                 ->whereIn('status', $allowed)
                 ->update([
                     'status' => OutboxStatus::Pending->value,
+                    'delivery_stage' => OutboxDeliveryStage::Recorded->value,
                     'next_attempt_at' => null,
                     'lease_owner' => null,
                     'lease_expires_at' => null,
+                    'remote_id' => null,
                     'updated_at' => $this->timestamp(),
                 ]);
             if ($updated !== 1) {
@@ -284,8 +409,9 @@ final readonly class DatabaseOutboxStore
         ?int $httpStatus,
         string $errorCode,
         ?int $nextAttemptAt,
+        ?int $remoteId = null,
     ): void {
-        $updated = $this->owned($operationId, $owner)->update([
+        $values = [
             'status' => $status->value,
             'next_attempt_at' => $nextAttemptAt,
             'lease_owner' => null,
@@ -294,7 +420,12 @@ final readonly class DatabaseOutboxStore
             'last_http_status' => $httpStatus,
             'last_error_code' => $errorCode,
             'updated_at' => $this->timestamp(),
-        ]);
+        ];
+        if ($remoteId !== null) {
+            $values['remote_id'] = $remoteId;
+            $values['delivery_stage'] = OutboxDeliveryStage::RemoteSucceeded->value;
+        }
+        $updated = $this->owned($operationId, $owner)->update($values);
         if ($updated !== 1) {
             throw new RuntimeException('The outbox processing lease was lost.');
         }
@@ -309,7 +440,7 @@ final readonly class DatabaseOutboxStore
         ?int $nextAttemptAt,
         ?int $remoteId,
     ): void {
-        $this->database()->table($this->commandsTable)->where('operation_id', $operationId)->update([
+        $values = [
             'status' => $status->value,
             'next_attempt_at' => $nextAttemptAt,
             'lease_owner' => null,
@@ -317,9 +448,13 @@ final readonly class DatabaseOutboxStore
             'last_failure_kind' => $failureKind,
             'last_http_status' => $httpStatus,
             'last_error_code' => $errorCode,
-            'remote_id' => $remoteId,
             'updated_at' => $this->timestamp(),
-        ]);
+        ];
+        if ($remoteId !== null) {
+            $values['remote_id'] = $remoteId;
+            $values['delivery_stage'] = OutboxDeliveryStage::RemoteSucceeded->value;
+        }
+        $this->database()->table($this->commandsTable)->where('operation_id', $operationId)->update($values);
     }
 
     private function audit(string $operationId, string $action, string $actor, string $reasonCode): void
@@ -358,26 +493,30 @@ final readonly class DatabaseOutboxStore
     {
         $payload = is_string($row->payload ?? null) ? json_decode($row->payload, true, flags: JSON_THROW_ON_ERROR) : null;
         if (! is_array($payload) || ! is_string($row->operation_id ?? null)
-            || ! is_string($row->connection ?? null) || ! is_string($row->local_scope ?? null)
+            || ! is_string($row->connection ?? null) || ! is_string($row->connection_hash ?? null)
+            || ! is_string($row->local_scope ?? null)
             || ! is_string($row->local_key ?? null) || ! is_string($row->aggregate_hash ?? null)
             || ! is_int($row->revision ?? null) || ! is_string($row->source ?? null)
-            || ! is_int($row->attempts ?? null)) {
+            || ! is_int($row->attempts ?? null) || ! is_string($row->delivery_stage ?? null)) {
             throw new RuntimeException('Stored outbox command data is invalid.');
         }
         $operation = is_string($row->operation ?? null) ? OutboxOperation::tryFrom($row->operation) : null;
         $status = is_string($row->status ?? null) ? OutboxStatus::tryFrom($row->status) : null;
-        if ($operation === null || $status === null) {
+        $deliveryStage = OutboxDeliveryStage::tryFrom($row->delivery_stage);
+        if ($operation === null || $status === null || $deliveryStage === null) {
             throw new RuntimeException('Stored outbox command state is invalid.');
         }
 
         $reference = new LocalContactReference($row->local_scope, $row->local_key);
-        if (! hash_equals(ContactIdentityHasher::local($row->connection, $reference), $row->aggregate_hash)) {
+        if (! hash_equals(ContactIdentityHasher::connection($row->connection), $row->connection_hash)
+            || ! hash_equals(ContactIdentityHasher::local($row->connection, $reference), $row->aggregate_hash)) {
             throw new RuntimeException('Stored outbox aggregate identity is invalid.');
         }
 
         return new OutboxRecord(
             $row->operation_id,
             $row->connection,
+            $row->connection_hash,
             $reference,
             $row->aggregate_hash,
             $row->revision,
@@ -386,6 +525,7 @@ final readonly class DatabaseOutboxStore
             $payload,
             $status,
             $row->attempts,
+            $deliveryStage,
             $this->nullableInt($row->next_attempt_at ?? null),
             is_string($row->lease_owner ?? null) ? $row->lease_owner : null,
             $this->nullableInt($row->lease_expires_at ?? null),

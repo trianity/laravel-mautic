@@ -276,15 +276,25 @@ the configured Laravel queue workers; duplicate jobs are harmless. The outbox da
 connection must be the host transaction connection—atomicity across two databases is
 not claimed.
 
-Workers serialize by connection/contact using a shared database lease and suppress an
-older revision when a newer revision is present. Set `mautic.outbox.lease_seconds`
-longer than every Mautic request timeout. No transaction or row lock is held during the
-HTTP call. Authentication, throttling, remote-server and safe update transport failures
-use bounded retry; numeric `Retry-After` is retained and honored. Validation and missing
-targets remain inspectable failures.
+Workers serialize by connection/contact using a shared database lease and deliver every
+stored revision sequentially. A higher revision cannot discard partial changes or pass
+an unresolved create, delayed retry, failure or ambiguity. Set
+`mautic.outbox.lease_seconds` above `operation_budget_seconds`; the declared budget must
+cover each individual request timeout. No transaction or row lock is held during HTTP.
+This lease is not a Mautic-side fence: an expired in-flight operation becomes ambiguous
+and blocks later revisions until explicit recovery. Exactly-once delivery and guaranteed
+remote ordering are not claimed.
 
-A create that loses its worker after the remote call but before durable local identity
-is an `ambiguous` command and is never automatically repeated. An operator must use
+Transient safe failures use bounded local backoff. A valid numeric `Retry-After` is a
+minimum server delay and may exceed the local `maximum_delay_seconds` cap. OAuth token
+persistence uncertainty and reauthorization requirements durably block the named
+connection. After resolving the token state externally, call
+`OutboxOperator::resumeAuthentication()` with an actor and reason to resume and audit
+delivery.
+
+A create 5xx, transport uncertainty, or local persistence failure after remote success
+is an `ambiguous` command and is never automatically repeated. The returned remote ID
+is retained as recovery evidence when available. An operator must use
 `OutboxOperator::reconcileCreated()` with the verified remote ID, or
 `confirmCreateAbsentAndRetry()` only after proving that no remote contact was created.
 Both decisions are audited. Failed rows are retained, and `retryFailed()` records its
@@ -294,6 +304,12 @@ send mail, delete contacts or serialize whole models.
 
 SQLite and MariaDB behavior, crash boundaries and limitations are recorded in
 [docs/decisions/002-outbox-delivery.md](docs/decisions/002-outbox-delivery.md).
+
+Hosts that published the initial development outbox migration must also publish and run
+the `2026_10_19_021000_correct_mautic_contact_outbox` migration. It backfills connection
+identity hashes and delivery stages, restores previously superseded retained commands to
+pending, and adds durable connection blockers. The correction is intentionally
+irreversible because removing that recovery metadata would make delivery unsafe.
 
 ## Normalized contact reads
 

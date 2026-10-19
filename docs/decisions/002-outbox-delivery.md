@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for Task 05.
+Accepted for Task 05 and corrected by Task 05A.
 
 ## Transaction and dispatch boundary
 
@@ -22,27 +22,46 @@ conflicting reuse.
 ## Serialization and crash behavior
 
 A database lease keyed by the SHA-256 aggregate identity serializes work for one
-connection/contact across queue workers. The lease duration must exceed the configured
-Mautic request timeout. The worker reloads state after acquiring the lease, suppresses
-duplicate jobs, and marks a command superseded when a higher revision exists. This lets
-newer state follow an in-flight older update without allowing an old queued job to run
-after the newer revision.
+connection/contact across queue workers. Commands are delivered sequentially by
+revision: a command may start only after every lower stored revision completed. Partial
+field changes are not coalesced or discarded, and create-before-update is an explicit
+prerequisite. Pending, delayed, failed, blocked and ambiguous lower revisions all block
+later work. The operator must retry or reconcile that lower command before the sequence
+can continue. The correction migration restores rows that the earlier implementation
+marked `superseded` to `pending` so their retained payloads are not lost.
 
-The command is durably marked `processing` before a remote call. A crashed idempotent
-field update may be retried after its lease expires. A crashed create without a durable
-mapping becomes `ambiguous` and is never automatically retried. If the mapping was
-already committed before the crash, recovery uses the mapped remote ID and performs an
-idempotent update instead of another create. Locks are leases rather than transactions
-held across HTTP; no database transaction remains open during a remote request.
+The lease must exceed the host-declared complete-operation budget, which must cover each
+individual request timeout. This sizing reduces expected expiry but is not remote
+fencing: OAuth refresh, paginated preflight and mutation requests can together outlive
+a lease, and Mautic provides no conditional-write token that prevents an expired worker
+from later writing remotely. Every expired `processing` operation therefore becomes
+`ambiguous`, including an update. It is never automatically retried, and its unresolved
+revision blocks newer delivery. The multi-process recovery test proves this local safety
+protocol; it does not claim exactly-once delivery or guaranteed remote ordering against
+an uncooperative in-flight request. No database transaction remains open over HTTP.
 
 ## Failures and operator recovery
 
-Authentication, throttling, remote-server and idempotent update transport failures use
-bounded deterministic exponential backoff. A numeric `Retry-After` is honored within
-the configured maximum delay. Validation, malformed responses, missing update targets
-and exhausted attempts are retained as terminal failures. Create timeouts, transport
-loss, known duplicates and expired create processing without a mapping are retained as
-ambiguous outcomes.
+Throttling, remote-server and idempotent update transport failures use bounded
+deterministic exponential backoff. The configured maximum caps package-calculated
+backoff only; a valid numeric `Retry-After` is a server-directed minimum and may exceed
+that cap. Validation, missing update targets and exhausted attempts are retained.
+Read-only create preflight failures may retry before a mutation is sent. Create 5xx,
+timeouts, transport loss, malformed success, known duplicates and unexpected mutation
+responses are ambiguous and never retried automatically.
+
+After a create returns, its remote ID and `remote_succeeded` stage are persisted before
+claiming the mapping. Mapping or later local-persistence failure retains that ID as
+reconciliation evidence when storage remains available. If even outcome persistence
+fails, the row remains `processing`; expiry applies the same conservative ambiguity
+protocol. `retryFailed()` cannot retry an ambiguous create.
+
+OAuth token persistence uncertainty and reauthorization requirements create a durable,
+byte-exact connection block. Other pending commands on that connection do not start.
+After external token reconciliation or host-authorized OAuth completion, an operator
+calls `resumeAuthentication()` with actor and reason; the block is removed, its blocked
+commands return to pending, and the decision is audited. Token-endpoint throttling,
+transient server failure and network failure retain their typed retry metadata.
 
 Stored diagnostics contain only enumerated failure kind, HTTP status and package-owned
 reason code; upstream messages, payloads and credentials are not persisted. Operator
@@ -53,8 +72,9 @@ or confirm absence before making it pending again.
 ## Database support
 
 SQLite tests prove transactional recording, dispatch-gap recovery and lease state
-transitions. A separate multi-process file-backed SQLite test proves shared storage, but
-SQLite serializes writes and does not reproduce InnoDB row-lock scheduling. The opt-in
-MariaDB suite uses a disposable database with case-insensitive default collation and is
-required before host integration claims. Production hosts must run workers against a
-shared durable database; an in-memory repository or process-local mutex is insufficient.
+transitions. Separate PHP processes share one file-backed SQLite database for both the
+duplicate-worker test and the controlled in-flight lease-expiry test; these are not
+memory fakes. SQLite still serializes writes and does not reproduce InnoDB row-lock
+scheduling. The opt-in disposable MariaDB suite verifies both fresh and Task 05 upgrade
+migrations. Production hosts must run workers against a shared durable database; an
+in-memory repository or process-local mutex is insufficient.
