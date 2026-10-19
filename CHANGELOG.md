@@ -29,6 +29,10 @@
   publishable Laravel persistence and versioned explicit recovery.
 - Exact-email discovery with none/unique/ambiguous outcomes and allowlisted field
   ownership resolution that preserves unchanged, clear and set intent.
+- Optional transactional contact outbox with after-commit dispatch, recovery polling,
+  shared aggregate leases, revision ordering and retained sanitized outcomes.
+- Audited operator recovery for ambiguous creates and failed commands, with bounded
+  retry policy and numeric `Retry-After` propagation.
 
 ### Fixed
 

@@ -15,6 +15,7 @@ class MauticReadException extends RuntimeException
         public readonly ReadOperation $operation,
         public readonly string $connection,
         public readonly ?int $httpStatus = null,
+        public readonly ?int $retryAfterSeconds = null,
     ) {
         parent::__construct(sprintf(
             'Mautic read failed (%s, operation: %s, connection: %s%s).',

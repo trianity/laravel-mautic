@@ -22,6 +22,17 @@ return [
         'mappings_table' => 'mautic_contact_mappings',
     ],
 
+    'outbox' => [
+        'database_connection' => null,
+        'commands_table' => 'mautic_outbox_commands',
+        'locks_table' => 'mautic_outbox_locks',
+        'audits_table' => 'mautic_outbox_audits',
+        'queue' => null,
+        'lease_seconds' => 30,
+        'max_attempts' => 5,
+        'maximum_delay_seconds' => 300,
+    ],
+
     'connections' => [
         'main' => [
             // Instance root URL, including a subdirectory if applicable.

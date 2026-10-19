@@ -9,9 +9,9 @@
 | Host domain | Contact model, identity verification, field ownership, CRM workflows and consent evidence | Host application |
 
 The connection foundation, normalized contact reads, explicit partial writes, manual
-segment commands, identity mappings and field ownership are implemented today. The
-remaining sections state design constraints for later milestones; they are not a
-feature list.
+segment commands, identity mappings, field ownership and transactional outgoing
+contact outbox are implemented today. The remaining sections state design constraints
+for later milestones; they are not a feature list.
 
 ## Current runtime
 
@@ -110,14 +110,36 @@ change fields, consent, DNC or mail state. Dynamic filter evaluation is asynchro
 manual removal may be represented as an exclusion until explicitly re-added. Remote
 deletion and general DNC removal are not exposed.
 
-## Reliable delivery (planned)
+## Reliable outgoing delivery
 
-- Outbox: host transaction records a durable command; dispatch after commit; a poller
-  recovers dispatch gaps. Queue retries alone do not guarantee durable handoff.
-- Serialize concurrent commands for the same connection/contact when ordering matters.
-  Record source, operation ID, revision/hash and processing outcome.
-- A timeout after a create may mean remote success. Mark ambiguous state, reconcile
-  before retrying; do not assume the endpoint provides an idempotency key.
+The optional database outbox records an explicit allowlisted create or update command
+inside the host transaction on the same database connection. Rollback removes it;
+after-commit queue dispatch is only a wake-up mechanism. Dispatch failure leaves the
+row eligible for the bounded recovery poller. Stable operation identity and aggregate
+revision constraints make exact recording idempotent and reject conflicting reuse.
+
+A database lease over the byte-exact connection/local-reference hash serializes workers
+without holding a transaction across HTTP. Workers reload after lease acquisition,
+ignore duplicate jobs and supersede older revisions when a newer command exists. The
+lease must exceed all configured request timeouts. SQLite proves shared multi-process
+coordination but does not model InnoDB row-lock scheduling; a disposable MariaDB suite
+checks the published schema, collation-independent aggregates and shared lease contract.
+
+Idempotent field updates can retry bounded authentication, throttling, server, timeout
+and transport failures. Numeric `Retry-After` is propagated from the SDK response and
+honored within the configured maximum delay. Validation, malformed responses, missing
+targets and exhausted attempts are retained. Stored diagnostics are enumerated and do
+not contain upstream messages.
+
+A create with transport uncertainty or an expired processing lease and no durable
+mapping becomes `ambiguous`; it is not automatically sent again. If identity was already
+committed, recovery updates the mapped contact. Otherwise an operator must explicitly
+claim a verified remote ID or confirm remote absence before retry, and every operator
+decision is audited. Full details are in
+`docs/decisions/002-outbox-delivery.md`.
+
+## Incoming delivery and reconciliation (planned)
+
 - Inbox: verify raw-body HMAC first, persist events durably, acknowledge, then process.
   Handle multiple event types and multiple items in one delivery. Separate delivery
   deduplication from event deduplication and do not suppress legitimate repeated events.

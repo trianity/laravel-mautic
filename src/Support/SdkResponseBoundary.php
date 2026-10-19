@@ -23,11 +23,15 @@ final class SdkResponseBoundary
      * @param  array<mixed>  $response
      * @return array<string, mixed>
      */
-    public function successful(array $response, ReadOperation $operation, string $connection): array
-    {
+    public function successful(
+        array $response,
+        ReadOperation $operation,
+        string $connection,
+        ?int $retryAfterSeconds = null,
+    ): array {
         $this->throwAuthenticationFailure();
         if (array_key_exists('errors', $response)) {
-            $this->throwErrors($response['errors'], $operation, $connection);
+            $this->throwErrors($response['errors'], $operation, $connection, $retryAfterSeconds);
         }
 
         if (! $this->isStringKeyed($response)) {
@@ -51,10 +55,11 @@ final class SdkResponseBoundary
         MutationOperation $operation,
         string $connection,
         ?int $batchIndex = null,
+        ?int $retryAfterSeconds = null,
     ): array {
         $this->throwAuthenticationFailure();
         if (array_key_exists('errors', $response)) {
-            $this->throwWriteErrors($response['errors'], $operation, $connection, $batchIndex);
+            $this->throwWriteErrors($response['errors'], $operation, $connection, $batchIndex, $retryAfterSeconds);
         }
 
         if (! $this->isStringKeyed($response)) {
@@ -100,8 +105,12 @@ final class SdkResponseBoundary
         }
     }
 
-    private function throwErrors(mixed $errors, ReadOperation $operation, string $connection): never
-    {
+    private function throwErrors(
+        mixed $errors,
+        ReadOperation $operation,
+        string $connection,
+        ?int $retryAfterSeconds,
+    ): never {
         if (! is_array($errors) || $errors === []) {
             $this->unexpected($operation, $connection);
         }
@@ -124,6 +133,7 @@ final class SdkResponseBoundary
             $operation,
             $connection,
             $status,
+            $retryAfterSeconds,
         );
     }
 
@@ -132,6 +142,7 @@ final class SdkResponseBoundary
         MutationOperation $operation,
         string $connection,
         ?int $batchIndex,
+        ?int $retryAfterSeconds,
     ): never {
         if (! is_array($errors) || $errors === []) {
             $this->unexpectedWrite($operation, $connection, $batchIndex);
@@ -157,7 +168,7 @@ final class SdkResponseBoundary
             throw new AmbiguousMutationOutcome($operation, $connection, $batchIndex);
         }
 
-        throw new MauticWriteException($kind, $operation, $connection, $status, $batchIndex);
+        throw new MauticWriteException($kind, $operation, $connection, $status, $batchIndex, $retryAfterSeconds);
     }
 
     private function classify(?int $status, string $message): ReadFailureKind

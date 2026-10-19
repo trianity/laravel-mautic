@@ -7,9 +7,9 @@ MIT licensed; intended for publication as `trianity/laravel-mautic` on Packagist
 
 **Status: development package, no stable release yet.** Basic Auth and opt-in OAuth2
 connections, normalized contact reads, explicit contact writes, manual segment
-commands, durable identity mappings, field ownership rules and raw upstream contexts
-are implemented. Webhooks, durable synchronization and reconciliation are planned,
-not available features.
+commands, durable identity mappings, field ownership rules, transactional outgoing
+synchronization and raw upstream contexts are implemented. Webhooks, incoming
+synchronization and general reconciliation are planned, not available features.
 No real Mautic server compatibility is claimed until the integration milestone.
 
 ## Requirements
@@ -235,6 +235,65 @@ tags and segment membership are rejected from generic field rules and remain sep
 host workflows. The mapper never calls `Model::toArray()` and does not send changes.
 Task 05 owns durable delivery. The schema and concurrency decision is documented in
 [docs/decisions/001-contact-identity-storage.md](docs/decisions/001-contact-identity-storage.md).
+
+## Transactional outgoing synchronization
+
+Publish the optional outbox migration and run it on the same database connection that
+owns the host transaction whose contact change is being recorded:
+
+```bash
+php artisan vendor:publish --tag=mautic-outbox-migrations
+php artisan migrate
+```
+
+Record an explicit immutable command inside the host transaction. The operation ID is
+a stable host idempotency key; revisions must increase for the same byte-exact
+connection/local reference. Only explicitly allowlisted `ContactFields` are persisted:
+
+```php
+use Illuminate\Support\Facades\DB;
+use Trianity\LaravelMautic\Identity\LocalContactReference;
+use Trianity\LaravelMautic\Outbox\ContactOutbox;
+use Trianity\LaravelMautic\Outbox\ContactSyncCommand;
+use Trianity\LaravelMautic\Write\ContactFields;
+
+DB::transaction(function () use ($contact): void {
+    app(ContactOutbox::class)->record(ContactSyncCommand::update(
+        operationId: (string) $contact->sync_operation_id,
+        connection: 'main',
+        localReference: new LocalContactReference('tenant:acme:crm-contact', (string) $contact->id),
+        revision: $contact->sync_revision,
+        fields: ContactFields::fromArray(['firstname' => $contact->first_name], ['firstname']),
+        source: 'crm-contact-save',
+    ));
+});
+```
+
+The insert rolls back with the host transaction. Queue dispatch happens only after
+commit and dispatch failure never removes the row or fails the already valid host
+operation. Schedule `app(OutboxPoller::class)->recover()` at a bounded interval and run
+the configured Laravel queue workers; duplicate jobs are harmless. The outbox database
+connection must be the host transaction connection—atomicity across two databases is
+not claimed.
+
+Workers serialize by connection/contact using a shared database lease and suppress an
+older revision when a newer revision is present. Set `mautic.outbox.lease_seconds`
+longer than every Mautic request timeout. No transaction or row lock is held during the
+HTTP call. Authentication, throttling, remote-server and safe update transport failures
+use bounded retry; numeric `Retry-After` is retained and honored. Validation and missing
+targets remain inspectable failures.
+
+A create that loses its worker after the remote call but before durable local identity
+is an `ambiguous` command and is never automatically repeated. An operator must use
+`OutboxOperator::reconcileCreated()` with the verified remote ID, or
+`confirmCreateAbsentAndRetry()` only after proving that no remote contact was created.
+Both decisions are audited. Failed rows are retained, and `retryFailed()` records its
+actor and reason code. Stored diagnostics contain package-owned classifications rather
+than upstream messages or credentials. The outbox does not reset consent, remove DNC,
+send mail, delete contacts or serialize whole models.
+
+SQLite and MariaDB behavior, crash boundaries and limitations are recorded in
+[docs/decisions/002-outbox-delivery.md](docs/decisions/002-outbox-delivery.md).
 
 ## Normalized contact reads
 

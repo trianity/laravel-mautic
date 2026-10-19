@@ -16,12 +16,14 @@
   database-shared callback/refresh locking.
 - Model-independent, connection-scoped contact identity mappings, exact-email
   discovery and explicit host/Mautic/shared field ownership resolution.
+- Transactional outgoing contact outbox with after-commit dispatch, recovery polling,
+  aggregate leases, revision ordering and audited ambiguous-create recovery.
 - Pest unit/feature tests, Testbench, Pint, Larastan level 8, CI matrix.
 - Ordered implementation prompts and architecture/release/contribution guidance.
 
 ## Not implemented
 
-Durable outbox/inbox, webhook endpoint, reconciliation, consent workflows and live
+Durable inbox, webhook endpoint, general reconciliation, consent workflows and live
 Mautic integration tests. Remote deletion and general DNC removal are not exposed. No
 migration runs implicitly and no automatic model events exist. No release tag or
 Packagist publication exists.
@@ -34,9 +36,50 @@ Tests exercise the real SDK with fake HTTP, not a real Mautic installation.
 
 ## Next task
 
-Review and select the next milestone. Durable outgoing synchronization in
-`prompts/05-outbox.md` is next in roadmap order.
+Review and select the next milestone. Verified webhook inbox in
+`prompts/06-webhook-inbox.md` is next in roadmap order.
 Inspect the selected task's design gates before implementation.
+
+## Durable outgoing synchronization — 2026-10-19
+
+Implemented an optional transactional contact outbox for explicit allowlisted create
+and update commands. The host supplies a stable operation ID, byte-exact local identity,
+monotonic revision and source. Recording participates in the configured host database
+transaction; rollback removes the command. Queue dispatch occurs after commit and is a
+best-effort wake-up only. A bounded poller recovers committed dispatch gaps, so host
+signup/order success does not depend on queue or Mautic availability after commit.
+
+Database leases serialize workers per connection/contact without holding a transaction
+across HTTP. Workers reload under the lease, ignore duplicate jobs, suppress stale
+revisions and require the lease to exceed every configured Mautic request timeout.
+Authentication, throttling, server and safe idempotent update transport failures use
+bounded deterministic backoff. Numeric `Retry-After` now crosses the real SDK boundary.
+Validation, missing targets, malformed responses and exhausted attempts remain retained
+failures with only sanitized classifications and package-owned reason codes.
+
+Creates are never blindly repeated after transport uncertainty or an expired processing
+lease without a durable mapping. They become inspectable `ambiguous` rows. An operator
+must claim a verified remote ID or explicitly confirm remote absence before retry; both
+paths, plus failed-command retry, write actor/reason audit rows. No generic sync resets
+consent, clears DNC, sends mail, deletes contacts or serializes host models.
+
+The migration is explicitly publishable under `mautic-outbox-migrations`. The schema,
+transaction boundary, retry rules and crash model are recorded in
+`docs/decisions/002-outbox-delivery.md`. Focused tests execute the published migration
+and cover rollback, dispatch failure/recovery, operation idempotency, conflicting
+revisions, duplicate jobs, stale revisions, connection isolation, safe create, terminal
+validation, Retry-After, operator audit and remote-success/local-crash reconciliation.
+The concurrency integration test starts two barrier-coordinated PHP processes over one
+shared file-backed SQLite database and proves that only one remote update is attempted;
+it is not a memory fake.
+
+Local `composer check` passed with strict Composer validation, Pint, Larastan level 8,
+127 passing tests / 514 assertions and two opt-in MariaDB tests skipped by the default
+environment. Both skipped tests were then run explicitly against the supplied disposable
+case-insensitive MariaDB database: contact identity passed with 4 assertions, and the
+published outbox migration/shared lease contract passed with 6 assertions. No live
+Mautic or production endpoint was called. Remote PHP/Laravel CI was not rerun because no
+authorized push occurred.
 
 ## Contact identity correction — 2026-10-19
 

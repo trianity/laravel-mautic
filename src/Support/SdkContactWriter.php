@@ -36,10 +36,12 @@ final readonly class SdkContactWriter implements ContactWriter
     {
         $this->rejectKnownDuplicate($fields, MutationOperation::CreateContact);
         $operation = MutationOperation::CreateContact;
+        $rawResponse = $this->contacts->create($fields->toPayload());
         $response = $this->boundary->successfulWrite(
-            $this->contacts->create($fields->toPayload()),
+            $rawResponse,
             $operation,
             $this->connection,
+            retryAfterSeconds: $this->retryAfterSeconds($this->contacts->getResponseHeaders()),
         );
 
         if (! array_key_exists('contact', $response)) {
@@ -53,10 +55,12 @@ final readonly class SdkContactWriter implements ContactWriter
     {
         $this->validateRemoteId($remoteId);
         $operation = MutationOperation::UpdateContact;
+        $rawResponse = $this->contacts->edit($remoteId, $fields->toPayload(), false);
         $response = $this->boundary->successfulWrite(
-            $this->contacts->edit($remoteId, $fields->toPayload(), false),
+            $rawResponse,
             $operation,
             $this->connection,
+            retryAfterSeconds: $this->retryAfterSeconds($this->contacts->getResponseHeaders()),
         );
 
         if (! array_key_exists('contact', $response)) {
@@ -141,6 +145,7 @@ final readonly class SdkContactWriter implements ContactWriter
                 $rawResponse,
                 ReadOperation::SearchContacts,
                 $this->connection,
+                $this->retryAfterSeconds($this->contacts->getResponseHeaders()),
             );
 
             if (! is_int($response['total'] ?? null) || ! is_array($response['contacts'] ?? null)) {
@@ -208,7 +213,12 @@ final readonly class SdkContactWriter implements ContactWriter
         $response = $operation === MutationOperation::AddContactToSegment
             ? $this->segments->addContact($segmentId, $remoteId)
             : $this->segments->removeContact($segmentId, $remoteId);
-        $this->boundary->successfulWrite($response, $operation, $this->connection);
+        $this->boundary->successfulWrite(
+            $response,
+            $operation,
+            $this->connection,
+            retryAfterSeconds: $this->retryAfterSeconds($this->segments->getResponseHeaders()),
+        );
     }
 
     /** @param array<string, mixed> $response */
@@ -283,5 +293,22 @@ final readonly class SdkContactWriter implements ContactWriter
         if ($remoteId < 1) {
             throw new InvalidWriteRequest('Remote IDs must be positive integers.');
         }
+    }
+
+    /** @param array<mixed> $headers */
+    private function retryAfterSeconds(array $headers): ?int
+    {
+        foreach ($headers as $name => $value) {
+            if (! is_string($name) || strtolower($name) !== 'retry-after') {
+                continue;
+            }
+            if (is_array($value)) {
+                $value = reset($value);
+            }
+
+            return is_string($value) && ctype_digit($value) ? (int) $value : null;
+        }
+
+        return null;
     }
 }

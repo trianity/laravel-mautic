@@ -16,6 +16,7 @@ class MauticWriteException extends RuntimeException
         public readonly string $connection,
         public readonly ?int $httpStatus = null,
         public readonly ?int $batchIndex = null,
+        public readonly ?int $retryAfterSeconds = null,
     ) {
         parent::__construct(sprintf(
             'Mautic mutation failed (%s, operation: %s, connection: %s%s%s).',

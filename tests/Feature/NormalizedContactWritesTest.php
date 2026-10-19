@@ -15,6 +15,7 @@ use Trianity\LaravelMautic\Contracts\HttpClientFactory;
 use Trianity\LaravelMautic\Exceptions\AmbiguousMutationOutcome;
 use Trianity\LaravelMautic\Exceptions\ContactAlreadyExists;
 use Trianity\LaravelMautic\Exceptions\ContactUpdateTargetNotFound;
+use Trianity\LaravelMautic\Exceptions\MauticReadException;
 use Trianity\LaravelMautic\Exceptions\MauticWriteException;
 use Trianity\LaravelMautic\MauticManager;
 use Trianity\LaravelMautic\Write\BatchItemOutcome;
@@ -174,6 +175,29 @@ it('does not create on a missing PATCH target', function () {
         404,
         ContactFields::fromArray(['firstname' => 'Ada'], ['firstname']),
     ))->toThrow(ContactUpdateTargetNotFound::class);
+});
+
+it('retains numeric Retry-After metadata on throttled writes', function () {
+    useContactWriteResponses([
+        new Response(429, ['Content-Type' => 'application/json', 'Retry-After' => '17'], '{"errors":[{"code":429,"message":"slow down"}]}'),
+    ]);
+
+    expect(fn () => app(MauticManager::class)->connection()->contactWrites()->update(
+        42,
+        ContactFields::fromArray(['firstname' => 'Ada'], ['firstname']),
+    ))->toThrow(fn (MauticWriteException $exception) => $exception->kind === FailureKind::Throttled
+        && $exception->retryAfterSeconds === 17);
+});
+
+it('retains numeric Retry-After metadata on throttled duplicate preflight reads', function () {
+    useContactWriteResponses([
+        new Response(429, ['Content-Type' => 'application/json', 'Retry-After' => '23'], '{"errors":[{"code":429,"message":"slow down"}]}'),
+    ]);
+
+    expect(fn () => app(MauticManager::class)->connection()->contactWrites()->create(
+        ContactFields::fromArray(['email' => 'person@example.test'], ['email']),
+    ))->toThrow(fn (MauticReadException $exception) => $exception->kind->value === 'throttled'
+        && $exception->retryAfterSeconds === 23);
 });
 
 it('normalizes create and update payload errors without exposing remote messages', function (string $method) {
