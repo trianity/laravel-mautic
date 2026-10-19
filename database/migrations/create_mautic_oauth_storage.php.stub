@@ -17,12 +17,14 @@ return new class extends Migration
             $table->string('connection')->primary();
             $table->text('token_payload');
             $table->unsignedBigInteger('expires_at');
+            $table->unsignedBigInteger('generation');
             $table->timestamps();
         });
 
         $schema->create(config('mautic.oauth.states_table', 'mautic_oauth_states'), function (Blueprint $table): void {
             $table->string('state_hash', 64)->primary();
             $table->string('connection')->index();
+            $table->string('context_hash', 64);
             $table->unsignedBigInteger('expires_at')->index();
             $table->timestamp('created_at');
         });

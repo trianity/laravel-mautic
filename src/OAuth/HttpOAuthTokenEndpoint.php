@@ -38,7 +38,7 @@ final readonly class HttpOAuthTokenEndpoint implements OAuthTokenEndpoint
             'client_secret' => $credentials->clientSecret,
             'redirect_uri' => $connectionConfig->oauthRedirectUri,
             'code' => $code,
-        ], null, false);
+        ], null);
     }
 
     public function refresh(string $connection, OAuthToken $token): OAuthToken
@@ -51,7 +51,7 @@ final readonly class HttpOAuthTokenEndpoint implements OAuthTokenEndpoint
             'client_id' => $credentials->clientId,
             'client_secret' => $credentials->clientSecret,
             'refresh_token' => $token->refreshToken,
-        ], $token->refreshToken, true);
+        ], $token->refreshToken);
     }
 
     /** @param array<string, string> $parameters */
@@ -59,7 +59,6 @@ final readonly class HttpOAuthTokenEndpoint implements OAuthTokenEndpoint
         ConnectionConfig $config,
         array $parameters,
         ?string $fallbackRefreshToken,
-        bool $reauthorizeOnClientError,
     ): OAuthToken {
         $request = new Request(
             'POST',
@@ -71,22 +70,42 @@ final readonly class HttpOAuthTokenEndpoint implements OAuthTokenEndpoint
         try {
             $response = $this->clients->make($config)->sendRequest($request);
         } catch (Throwable) {
-            throw new OAuthTokenRequestFailed($config->name);
+            throw new OAuthTokenRequestFailed($config->name, OAuthTokenFailureKind::Network);
         }
 
         $status = $response->getStatusCode();
         if ($status < 200 || $status >= 300) {
-            if ($reauthorizeOnClientError && $status >= 400 && $status < 500) {
-                throw new OAuthReauthorizationRequired($config->name);
+            $retryAfter = $this->retryAfterSeconds($response->getHeaderLine('Retry-After'));
+            if ($status === 429) {
+                throw new OAuthTokenRequestFailed(
+                    $config->name,
+                    OAuthTokenFailureKind::Throttled,
+                    $status,
+                    $retryAfter,
+                );
+            }
+            if ($status >= 500) {
+                throw new OAuthTokenRequestFailed($config->name, OAuthTokenFailureKind::RemoteServer, $status);
             }
 
-            throw new OAuthTokenRequestFailed($config->name, $status);
+            $error = $this->oauthError((string) $response->getBody());
+            if ($error === 'invalid_grant') {
+                throw new OAuthReauthorizationRequired($config->name, $status);
+            }
+            if ($error === 'invalid_client') {
+                throw new OAuthTokenRequestFailed($config->name, OAuthTokenFailureKind::InvalidClient, $status);
+            }
+            if ($error === null) {
+                throw new OAuthTokenRequestFailed($config->name, OAuthTokenFailureKind::MalformedResponse, $status);
+            }
+
+            throw new OAuthTokenRequestFailed($config->name, OAuthTokenFailureKind::ClientRequest, $status);
         }
 
         try {
             $payload = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
         } catch (JsonException) {
-            throw new OAuthTokenRequestFailed($config->name, $status);
+            throw new OAuthTokenRequestFailed($config->name, OAuthTokenFailureKind::MalformedResponse, $status);
         }
 
         $accessToken = is_array($payload) ? ($payload['access_token'] ?? null) : null;
@@ -98,10 +117,28 @@ final readonly class HttpOAuthTokenEndpoint implements OAuthTokenEndpoint
             || ! is_string($refreshToken) || $refreshToken === ''
             || (! is_int($expiresIn) && ! (is_string($expiresIn) && ctype_digit($expiresIn)))
             || (int) $expiresIn <= 0 || ! is_string($tokenType)) {
-            throw new OAuthTokenRequestFailed($config->name, $status);
+            throw new OAuthTokenRequestFailed($config->name, OAuthTokenFailureKind::MalformedResponse, $status);
         }
 
         return new OAuthToken($accessToken, $refreshToken, $this->clock->now() + (int) $expiresIn, $tokenType);
+    }
+
+    private function oauthError(string $body): ?string
+    {
+        try {
+            $payload = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            return null;
+        }
+
+        $error = is_array($payload) ? ($payload['error'] ?? null) : null;
+
+        return is_string($error) && $error !== '' ? $error : null;
+    }
+
+    private function retryAfterSeconds(string $header): ?int
+    {
+        return ctype_digit($header) ? (int) $header : null;
     }
 
     private function connection(string $name): ConnectionConfig

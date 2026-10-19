@@ -9,6 +9,7 @@ use Illuminate\Database\ConnectionResolverInterface;
 use RuntimeException;
 use Trianity\LaravelMautic\Contracts\OAuthTokenRepository;
 use Trianity\LaravelMautic\Data\OAuthToken;
+use Trianity\LaravelMautic\Data\OAuthTokenRecord;
 
 final readonly class DatabaseOAuthTokenRepository implements OAuthTokenRepository
 {
@@ -20,6 +21,11 @@ final readonly class DatabaseOAuthTokenRepository implements OAuthTokenRepositor
     ) {}
 
     public function get(string $connection): ?OAuthToken
+    {
+        return $this->record($connection)?->token;
+    }
+
+    public function record(string $connection): ?OAuthTokenRecord
     {
         $row = $this->connections->connection($this->databaseConnection)
             ->table($this->table)->where('connection', $connection)->first();
@@ -33,19 +39,23 @@ final readonly class DatabaseOAuthTokenRepository implements OAuthTokenRepositor
             || ! is_string($payload['access_token'] ?? null)
             || ! is_string($payload['refresh_token'] ?? null)
             || ! is_int($payload['expires_at'] ?? null)
-            || ! is_string($payload['token_type'] ?? null)) {
+            || ! is_string($payload['token_type'] ?? null)
+            || ! is_int($row->generation ?? null) || $row->generation < 1) {
             throw new RuntimeException('Stored OAuth token data is invalid.');
         }
 
-        return new OAuthToken(
-            $payload['access_token'],
-            $payload['refresh_token'],
-            $payload['expires_at'],
-            $payload['token_type'],
+        return new OAuthTokenRecord(
+            new OAuthToken(
+                $payload['access_token'],
+                $payload['refresh_token'],
+                $payload['expires_at'],
+                $payload['token_type'],
+            ),
+            $row->generation,
         );
     }
 
-    public function save(string $connection, OAuthToken $token): void
+    public function persist(string $connection, OAuthToken $token, ?int $expectedGeneration): bool
     {
         $payload = json_encode([
             'access_token' => $token->accessToken,
@@ -57,14 +67,25 @@ final readonly class DatabaseOAuthTokenRepository implements OAuthTokenRepositor
         $now = date('Y-m-d H:i:s');
         $database = $this->connections->connection($this->databaseConnection);
 
-        $database->transaction(function () use ($database, $connection, $encrypted, $token, $now): void {
-            $database->table($this->table)->upsert([[
+        if ($expectedGeneration === null) {
+            return $database->table($this->table)->insertOrIgnore([
                 'connection' => $connection,
                 'token_payload' => $encrypted,
                 'expires_at' => $token->expiresAt,
+                'generation' => 1,
                 'created_at' => $now,
                 'updated_at' => $now,
-            ]], ['connection'], ['token_payload', 'expires_at', 'updated_at']);
-        });
+            ]) === 1;
+        }
+
+        return $database->table($this->table)
+            ->where('connection', $connection)
+            ->where('generation', $expectedGeneration)
+            ->update([
+                'token_payload' => $encrypted,
+                'expires_at' => $token->expiresAt,
+                'generation' => $expectedGeneration + 1,
+                'updated_at' => $now,
+            ]) === 1;
     }
 }

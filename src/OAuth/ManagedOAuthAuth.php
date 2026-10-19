@@ -8,10 +8,16 @@ use Mautic\Auth\AuthInterface;
 use Mautic\Auth\OAuth;
 use Psr\Http\Client\ClientInterface;
 use Psr\Http\Message\ResponseInterface;
+use Throwable;
+use Trianity\LaravelMautic\Contracts\OAuthAuthenticationFailureProvider;
+use Trianity\LaravelMautic\Exceptions\OAuthAuthenticationException;
+use Trianity\LaravelMautic\Exceptions\OAuthPreRequestFailed;
 
-final class ManagedOAuthAuth implements AuthInterface
+final class ManagedOAuthAuth implements AuthInterface, OAuthAuthenticationFailureProvider
 {
     private ?OAuth $delegate = null;
+
+    private ?OAuthAuthenticationException $authenticationFailure = null;
 
     public function __construct(
         private readonly string $connection,
@@ -31,7 +37,18 @@ final class ManagedOAuthAuth implements AuthInterface
      */
     public function makeRequest($url, array $parameters = [], $method = 'GET', array $settings = []): array|string
     {
-        $token = $this->tokens->validToken($this->connection);
+        $this->authenticationFailure = null;
+        try {
+            $token = $this->tokens->validToken($this->connection);
+        } catch (OAuthAuthenticationException $exception) {
+            $this->authenticationFailure = $exception;
+
+            return ['errors' => [['code' => 0, 'message' => 'OAuth authentication failed before API request.']]];
+        } catch (Throwable) {
+            $this->authenticationFailure = new OAuthPreRequestFailed($this->connection);
+
+            return ['errors' => [['code' => 0, 'message' => 'OAuth authentication failed before API request.']]];
+        }
         $this->delegate = new OAuth($this->client);
         $this->delegate->setup(accessToken: $token->accessToken, accessTokenExpires: (string) $token->expiresAt);
 
@@ -39,6 +56,14 @@ final class ManagedOAuthAuth implements AuthInterface
         $response = $this->delegate->makeRequest($url, $parameters, $method, $settings);
 
         return $response;
+    }
+
+    public function pullAuthenticationFailure(): ?OAuthAuthenticationException
+    {
+        $failure = $this->authenticationFailure;
+        $this->authenticationFailure = null;
+
+        return $failure;
     }
 
     public function getResponse(): ResponseInterface

@@ -79,9 +79,14 @@ final readonly class ConnectionConfig
             throw new InvalidConfiguration('Mautic connect_timeout cannot exceed timeout.');
         }
 
+        $instanceUrl = rtrim($url, '/');
+        if (str_ends_with($instanceUrl, '/api')) {
+            $instanceUrl = substr($instanceUrl, 0, -4);
+        }
+
         return new self(
             $name,
-            rtrim($url, '/'),
+            $instanceUrl,
             $auth,
             $username,
             $password,
@@ -93,7 +98,7 @@ final readonly class ConnectionConfig
 
     public function apiUrl(): string
     {
-        return str_ends_with($this->url, '/api') ? $this->url.'/' : $this->url.'/api/';
+        return $this->url.'/api/';
     }
 
     private static function timeout(mixed $value): float

@@ -14,9 +14,17 @@ use Trianity\LaravelMautic\OAuth\SystemClock;
 require dirname(__DIR__, 2).'/vendor/autoload.php';
 
 $databasePath = $argv[1] ?? '';
+$worker = $argv[2] ?? '';
 $capsule = new Manager;
 $capsule->addConnection(['driver' => 'sqlite', 'database' => $databasePath, 'prefix' => '']);
 $capsule->setAsGlobal();
+$capsule->getConnection()->statement('PRAGMA busy_timeout = 5000');
+$capsule->table('refresh_ready')->insert(['worker' => $worker]);
+
+$deadline = microtime(true) + 5;
+while ($capsule->table('refresh_ready')->count() < 3 && microtime(true) < $deadline) {
+    usleep(10_000);
+}
 
 $repository = new DatabaseOAuthTokenRepository(
     $capsule->getDatabaseManager(),

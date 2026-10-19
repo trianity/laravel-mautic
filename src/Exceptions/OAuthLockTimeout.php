@@ -4,12 +4,16 @@ declare(strict_types=1);
 
 namespace Trianity\LaravelMautic\Exceptions;
 
-use RuntimeException;
+use Trianity\LaravelMautic\OAuth\OAuthAuthenticationFailureKind;
 
-final class OAuthLockTimeout extends RuntimeException
+final class OAuthLockTimeout extends OAuthAuthenticationException
 {
-    public function __construct(public readonly string $connection)
+    public function __construct(string $connection)
     {
-        parent::__construct('Timed out waiting for the OAuth refresh lock.');
+        parent::__construct(
+            OAuthAuthenticationFailureKind::RefreshLockTimeout,
+            $connection,
+            'Timed out waiting for the OAuth refresh lock.',
+        );
     }
 }

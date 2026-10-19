@@ -4,12 +4,16 @@ declare(strict_types=1);
 
 namespace Trianity\LaravelMautic\Exceptions;
 
-use RuntimeException;
+use Trianity\LaravelMautic\OAuth\OAuthAuthenticationFailureKind;
 
-final class OAuthReauthorizationRequired extends RuntimeException
+final class OAuthReauthorizationRequired extends OAuthAuthenticationException
 {
-    public function __construct(public readonly string $connection)
+    public function __construct(string $connection, public readonly ?int $status = null)
     {
-        parent::__construct('OAuth authorization must be completed interactively for this connection.');
+        parent::__construct(
+            OAuthAuthenticationFailureKind::AuthorizationRequired,
+            $connection,
+            'OAuth authorization must be completed interactively for this connection.',
+        );
     }
 }

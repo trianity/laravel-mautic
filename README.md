@@ -71,6 +71,11 @@ php artisan vendor:publish --tag=mautic-migrations
 php artisan migrate
 ```
 
+The current development migration includes the state `context_hash` and token
+`generation` columns. If an older development stub was already published, replace it
+before running it. If it was already run, add those columns with a host migration;
+do not edit a migration that has run in a shared environment.
+
 Set the connection's `auth` to `oauth2` and copy the commented `oauth` block from
 `config/mautic.php`. `client_secret_env` is the **name** of a runtime environment
 variable, not its value. The default credential provider reads the secret with
@@ -86,34 +91,61 @@ returned URL:
 use Trianity\LaravelMautic\OAuth\OAuth2Service;
 
 $oauth = app(OAuth2Service::class);
-$authorizationUrl = $oauth->authorizationUrl('main');
+$authorizationContext = bin2hex(random_bytes(32));
+session()->put('mautic.oauth.main.context', $authorizationContext);
+$authorizationUrl = $oauth->authorizationUrl('main', $authorizationContext);
 // The host returns its own redirect response to $authorizationUrl.
 ```
 
-In the configured callback, pass the explicit connection, returned state and code:
+In the configured callback, retrieve the context from trusted host-side state. Never
+accept the context from a query string, form field or other callback input:
 
 ```php
-$oauth->complete('main', (string) request('state'), (string) request('code'));
+$authorizationContext = session()->pull('mautic.oauth.main.context');
+
+$oauth->complete(
+    'main',
+    (string) request('state'),
+    (string) request('code'),
+    is_string($authorizationContext) ? $authorizationContext : null,
+);
 ```
 
-State is random, stored only as a hash, connection-bound, expiring and atomically
-consumed once. The package never reads `$_GET`/`$_SESSION`, emits a redirect or calls
-`exit`. Queue jobs and backend API calls therefore either obtain a valid token,
-perform one bounded refresh, wait for the shared database lock, or throw
-`OAuthReauthorizationRequired`; they never start an interactive flow.
+State is random, stored only as a hash, bound to both the connection and an opaque
+host-supplied authorization context, expiring and atomically consumed once. Missing or
+mismatched context rejects the callback without consuming state or changing tokens.
+The package never reads `$_GET`/`$_SESSION`, emits a redirect or calls `exit`. Queue
+jobs and backend API calls therefore either obtain a valid token, perform one bounded
+refresh, wait for the shared database lock, or throw a typed OAuth exception; they
+never start an interactive flow.
 
 Access and refresh tokens are encrypted with the host `APP_KEY` and stored per named
-connection. Refresh uses a database lock shared by workers, re-reads the token after
-lock acquisition, and atomically stores access/refresh rotation before releasing the
-lock. Set `lock_lease_seconds` longer than the configured request timeout. The table
-names and database connection are configurable under `mautic.oauth`, or hosts may
-replace `OAuthTokenRepository`, `OAuthStateRepository` and `OAuthRefreshLock`.
+connection. Callback exchange and refresh use the same database lock. After acquiring
+it, refresh re-reads the token, and both paths use a token generation compare-and-set
+so an expired lock owner cannot overwrite a newer rotation. New access/refresh tokens
+are committed before releasing an owned lock. Set `lock_lease_seconds` strictly longer
+than every OAuth connection's request `timeout`; invalid relationships fail before a
+callback state is consumed. The table names and database connection are configurable
+under `mautic.oauth`, or hosts may replace `OAuthTokenRepository`,
+`OAuthStateRepository` and `OAuthRefreshLock`.
 
-A rejected refresh token requires a new host-initiated authorization. The token
-endpoint is called once per exchange/refresh attempt and is never automatically
-retried. For recovery, confirm the named connection, client callback URL, runtime
-secret availability and migration, then begin a fresh browser authorization. Do not
-copy production credentials into support output or package configuration.
+A rejected refresh token (`invalid_grant`) requires a new host-initiated authorization.
+Invalid client credentials, throttling (including numeric `Retry-After`), remote 5xx,
+network failure and malformed responses remain distinct, secret-free failures. These
+typed failures survive the SDK boundary before any contact request is sent; genuine
+post-send mutation transport failures retain their ambiguous outcome classification.
+The token endpoint is called once per exchange/refresh attempt and is never
+automatically retried.
+
+If remote rotation succeeds but local persistence fails, or a stale lock owner loses
+the token-generation compare-and-set, `OAuthTokenPersistenceUncertain` is raised and
+the package does not retry the grant. Stop automated work for that connection, inspect
+the durable token record without exposing secrets, and normally start a fresh
+host-authorized browser flow. Also confirm the connection name, callback URL, runtime
+secret and migration. The multi-process integration suite proves shared locking,
+generation convergence and one-time state consumption with barrier-coordinated,
+separate PHP processes over one file-backed SQLite database. This is not a memory fake.
+Equivalent MariaDB runtime behavior has not been exercised by the local suite.
 
 ## Normalized contact reads
 

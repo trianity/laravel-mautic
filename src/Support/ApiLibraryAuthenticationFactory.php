@@ -19,6 +19,8 @@ final readonly class ApiLibraryAuthenticationFactory implements AuthenticationFa
     public function make(ConnectionConfig $config, ClientInterface $client): AuthInterface
     {
         if ($config->auth === 'oauth2') {
+            $this->tokens->assertSupportsRequestTimeout($config->timeout);
+
             return new ManagedOAuthAuth($config->name, $client, $this->tokens);
         }
 

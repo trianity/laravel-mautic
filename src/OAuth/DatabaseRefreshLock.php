@@ -19,7 +19,11 @@ final readonly class DatabaseRefreshLock implements OAuthRefreshLock
         private ?string $databaseConnection = null,
         private int $pollMilliseconds = 100,
         private string $table = 'mautic_oauth_locks',
-    ) {}
+    ) {
+        if ($pollMilliseconds <= 0) {
+            throw new \InvalidArgumentException('OAuth lock polling must be positive.');
+        }
+    }
 
     public function block(string $connection, int $waitSeconds, int $leaseSeconds, Closure $callback): mixed
     {

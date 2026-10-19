@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Trianity\LaravelMautic\Support;
 
+use Trianity\LaravelMautic\Contracts\OAuthAuthenticationFailureProvider;
 use Trianity\LaravelMautic\Exceptions\AmbiguousMutationOutcome;
 use Trianity\LaravelMautic\Exceptions\ContactNotFound;
 use Trianity\LaravelMautic\Exceptions\ContactUpdateTargetNotFound;
@@ -16,12 +17,15 @@ use Trianity\LaravelMautic\Write\MutationOperation;
 
 final class SdkResponseBoundary
 {
+    public function __construct(private readonly ?OAuthAuthenticationFailureProvider $authenticationFailures = null) {}
+
     /**
      * @param  array<mixed>  $response
      * @return array<string, mixed>
      */
     public function successful(array $response, ReadOperation $operation, string $connection): array
     {
+        $this->throwAuthenticationFailure();
         if (array_key_exists('errors', $response)) {
             $this->throwErrors($response['errors'], $operation, $connection);
         }
@@ -48,6 +52,7 @@ final class SdkResponseBoundary
         string $connection,
         ?int $batchIndex = null,
     ): array {
+        $this->throwAuthenticationFailure();
         if (array_key_exists('errors', $response)) {
             $this->throwWriteErrors($response['errors'], $operation, $connection, $batchIndex);
         }
@@ -85,6 +90,14 @@ final class SdkResponseBoundary
     public function statusCode(mixed $value): ?int
     {
         return $this->integer($value);
+    }
+
+    private function throwAuthenticationFailure(): void
+    {
+        $failure = $this->authenticationFailures?->pullAuthenticationFailure();
+        if ($failure !== null) {
+            throw $failure;
+        }
     }
 
     private function throwErrors(mixed $errors, ReadOperation $operation, string $connection): never

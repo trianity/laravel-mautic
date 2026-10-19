@@ -12,7 +12,8 @@
 - Allowlisted contact creates, PATCH-only partial updates and checked batch writes.
 - Manual segment membership commands, mutation safety metadata and deterministic fake.
 - Opt-in OAuth2 authorization-code and refresh-token lifecycle with encrypted durable
-  per-connection tokens, one-time callback state and database-shared refresh locking.
+  per-connection versioned tokens, host-context-bound one-time callback state and
+  database-shared callback/refresh locking.
 - Pest unit/feature tests, Testbench, Pint, Larastan level 8, CI matrix.
 - Ordered implementation prompts and architecture/release/contribution guidance.
 
@@ -43,24 +44,42 @@ interactive redirect, reads request globals or starts authorization from backgro
 API work. Only authorization-code and refresh-token grants are implemented; no
 client-credentials assumption was added.
 
-The default database repositories store encrypted access/refresh tokens per named
-connection and hash callback state. State is expiring, connection-bound and atomically
-single-use. Refresh acquires an owner-scoped database lock, re-reads the token inside
-the lock, performs at most one refresh request and atomically saves rotation before
-release. Revoked/missing refresh tokens require explicit host-initiated reauthorization.
-OAuth client secrets are resolved at runtime rather than stored in config cache.
+The default database repositories store encrypted, versioned access/refresh tokens per
+named connection. Callback state is hash-only at rest, expiring, bound to both the
+connection and an opaque host-supplied authorization context, and conditionally
+consumed once. Missing or mismatched trusted context does not consume state or change
+tokens. The host must retain that context in trusted server-side state.
+
+Callback exchange and refresh use the same owner-scoped database lock. Refresh re-reads
+the token after acquisition, and both paths use generation compare-and-set persistence
+before releasing the lock. An owner whose lease expired cannot overwrite a newer
+rotation. Lock lease is validated as strictly longer than the request timeout. A remote
+rotation followed by a failed or lost local write raises
+`OAuthTokenPersistenceUncertain` and is never automatically retried.
+
+Typed pre-request authorization, lock, endpoint and persistence failures survive the
+upstream SDK boundary without sending a contact request. `invalid_grant`,
+`invalid_client`, numeric `Retry-After` throttling, remote 5xx, network and malformed
+token responses are classified without body/secret leakage. True post-send mutation
+transport loss remains ambiguous. Instance-root normalization produces correct API and
+OAuth endpoints for root and subdirectory URLs with or without `/api`.
 
 The migration is explicitly publishable under `mautic-migrations` and never runs
 automatically. Storage contracts, table names, database connection and credential
-provider are replaceable. Focused tests cover encryption, isolation, token rotation,
-expiry, stale objects, invalid/replayed state, revoked refresh, OAuth bearer contact
-reads and unchanged Basic Auth behavior. The concurrency integration test starts three
-real PHP processes over one shared SQLite database; exactly one refresh occurs and all
-workers converge on the atomically stored rotated token. It is not a memory fake.
+provider are replaceable. Focused tests cover state context, replay/expiry/concurrency,
+lease expiry, callback/refresh races, uncertain persistence, endpoint classification,
+real-SDK contact reads/writes and unchanged Basic Auth behavior. The lock integration
+test starts three barrier-coordinated real PHP processes over one shared file-backed
+SQLite database; exactly one refresh occurs and all workers converge on the stored
+rotation. A second barrier-coordinated two-process test proves one-time context-bound
+state consumption. These are not memory fakes. SQLite is runtime-proven; MariaDB was
+not run locally.
+
 Local `composer check` passed with strict Composer validation, Pint, Larastan level 8
-and 77 tests / 213 assertions. It ran in the approved unrestricted environment because
-PHPStan's loopback TCP server is unavailable in the local sandbox. No live Mautic or
-production endpoint was called, and the remote PHP/Laravel matrix was not rerun.
+and 99 tests / 313 assertions. It ran in the approved unrestricted environment because
+PHPStan's loopback TCP server intermittently cannot start in the local sandbox. No live
+Mautic or production endpoint was called, and the remote PHP/Laravel matrix was not
+rerun for these uncommitted changes.
 
 ## Contact write corrections — 2026-10-18
 

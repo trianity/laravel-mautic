@@ -21,6 +21,7 @@ use Trianity\LaravelMautic\Contracts\OAuthTokenEndpoint;
 use Trianity\LaravelMautic\Contracts\OAuthTokenRepository;
 use Trianity\LaravelMautic\Data\OAuthClientCredentials;
 use Trianity\LaravelMautic\Data\OAuthToken;
+use Trianity\LaravelMautic\Data\OAuthTokenRecord;
 use Trianity\LaravelMautic\Exceptions\InvalidOAuthState;
 use Trianity\LaravelMautic\Exceptions\OAuthReauthorizationRequired;
 use Trianity\LaravelMautic\MauticManager;
@@ -47,11 +48,13 @@ beforeEach(function () {
         $table->string('connection')->primary();
         $table->text('token_payload');
         $table->unsignedBigInteger('expires_at');
+        $table->unsignedBigInteger('generation');
         $table->timestamps();
     });
     Schema::connection('oauth-test')->create('mautic_oauth_states', function (Blueprint $table): void {
         $table->string('state_hash', 64)->primary();
         $table->string('connection');
+        $table->string('context_hash', 64);
         $table->unsignedBigInteger('expires_at');
         $table->timestamp('created_at');
     });
@@ -67,8 +70,8 @@ it('encrypts durable connection-scoped tokens and replaces rotations atomically'
     $first = new OAuthToken('access-one', 'refresh-one', 2_000_000_000);
     $second = new OAuthToken('access-two', 'refresh-two', 2_000_000_100);
 
-    $repository->save('main', $first);
-    $repository->save('second', $second);
+    expect($repository->persist('main', $first, null))->toBeTrue()
+        ->and($repository->persist('second', $second, null))->toBeTrue();
 
     $raw = DB::connection('oauth-test')->table('mautic_oauth_tokens')->where('connection', 'main')->value('token_payload');
 
@@ -77,7 +80,7 @@ it('encrypts durable connection-scoped tokens and replaces rotations atomically'
         ->and($repository->get('main'))->toEqual($first)
         ->and($repository->get('second'))->toEqual($second);
 
-    $repository->save('main', $second);
+    expect($repository->persist('main', $second, 1))->toBeTrue();
 
     expect($repository->get('main'))->toEqual($second)
         ->and(DB::connection('oauth-test')->table('mautic_oauth_tokens')->where('connection', 'main')->count())->toBe(1);
@@ -85,11 +88,11 @@ it('encrypts durable connection-scoped tokens and replaces rotations atomically'
 
 it('issues expiring one-time state bound to a connection', function () {
     $states = new DatabaseOAuthStateRepository(DB::getFacadeRoot(), new SystemClock, 'oauth-test');
-    $state = $states->issue('main', 300);
+    $state = $states->issue('main', 'browser-flow', 300);
 
-    expect($states->consume('second', $state))->toBeFalse()
-        ->and($states->consume('main', $state))->toBeTrue()
-        ->and($states->consume('main', $state))->toBeFalse();
+    expect($states->consume('second', $state, 'browser-flow'))->toBeFalse()
+        ->and($states->consume('main', $state, 'browser-flow'))->toBeTrue()
+        ->and($states->consume('main', $state, 'browser-flow'))->toBeFalse();
 });
 
 it('rejects expired state', function () {
@@ -103,10 +106,10 @@ it('rejects expired state', function () {
         }
     };
     $states = new DatabaseOAuthStateRepository(DB::getFacadeRoot(), $clock, 'oauth-test');
-    $state = $states->issue('main', 60);
+    $state = $states->issue('main', 'browser-flow', 60);
     $clock->timestamp = 1_061;
 
-    expect($states->consume('main', $state))->toBeFalse();
+    expect($states->consume('main', $state, 'browser-flow'))->toBeFalse();
 });
 
 it('re-reads under the refresh lock and saves rotation before releasing it', function () {
@@ -120,15 +123,22 @@ it('re-reads under the refresh lock and saves rotation before releasing it', fun
 
         public function get(string $connection): ?OAuthToken
         {
-            $this->reads++;
-
-            return $this->token;
+            return $this->record($connection)?->token;
         }
 
-        public function save(string $connection, OAuthToken $token): void
+        public function record(string $connection): ?OAuthTokenRecord
+        {
+            $this->reads++;
+
+            return new OAuthTokenRecord($this->token, 1);
+        }
+
+        public function persist(string $connection, OAuthToken $token, ?int $expectedGeneration): bool
         {
             $this->token = $token;
             $this->savedInsideLock = true;
+
+            return true;
         }
     };
     $repository->token = new OAuthToken('stale', 'refresh-old', 1);
@@ -181,12 +191,23 @@ it('uses a token refreshed by another worker after acquiring the lock', function
 
         public function get(string $connection): ?OAuthToken
         {
-            $this->reads++;
-
-            return $this->reads === 1 ? new OAuthToken('stale', 'old', 1) : $this->fresh;
+            return $this->record($connection)?->token;
         }
 
-        public function save(string $connection, OAuthToken $token): void {}
+        public function record(string $connection): ?OAuthTokenRecord
+        {
+            $this->reads++;
+
+            return new OAuthTokenRecord(
+                $this->reads === 1 ? new OAuthToken('stale', 'old', 1) : $this->fresh,
+                $this->reads,
+            );
+        }
+
+        public function persist(string $connection, OAuthToken $token, ?int $expectedGeneration): bool
+        {
+            return true;
+        }
     };
     $endpoint = new class implements OAuthTokenEndpoint
     {
@@ -219,7 +240,15 @@ it('never redirects when authorization or a revoked refresh token is required', 
             return null;
         }
 
-        public function save(string $connection, OAuthToken $token): void {}
+        public function record(string $connection): ?OAuthTokenRecord
+        {
+            return null;
+        }
+
+        public function persist(string $connection, OAuthToken $token, ?int $expectedGeneration): bool
+        {
+            return true;
+        }
     };
     $endpoint = new class implements OAuthTokenEndpoint
     {
@@ -274,19 +303,27 @@ it('validates state before exchanging callback codes and stores the result', fun
             'redirect_uri' => 'https://app.example.test/callback',
         ],
     ]);
-    $service = new OAuth2Service(config(), $states, $tokens, $endpoint, 300);
-    $url = $service->authorizationUrl('main');
+    config()->set('mautic.connections.second', config('mautic.connections.main'));
+    $service = new OAuth2Service(
+        config(),
+        $states,
+        $tokens,
+        $endpoint,
+        new DatabaseRefreshLock(DB::getFacadeRoot(), new SystemClock, 'oauth-test', 1),
+        300,
+    );
+    $url = $service->authorizationUrl('main', 'browser-flow');
     parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
 
     expect($query['state'] ?? null)->toBeString()
-        ->and(fn () => $service->complete('second', (string) $query['state'], 'code'))
+        ->and(fn () => $service->complete('second', (string) $query['state'], 'code', 'browser-flow'))
         ->toThrow(InvalidOAuthState::class);
 
-    $token = $service->complete('main', (string) $query['state'], 'code');
+    $token = $service->complete('main', (string) $query['state'], 'code', 'browser-flow');
 
     expect($endpoint->exchanges)->toBe(1)
         ->and($tokens->get('main'))->toEqual($token)
-        ->and(fn () => $service->complete('main', (string) $query['state'], 'replay'))
+        ->and(fn () => $service->complete('main', (string) $query['state'], 'replay', 'browser-flow'))
         ->toThrow(InvalidOAuthState::class);
 });
 
@@ -386,7 +423,15 @@ it('uses managed OAuth bearer authentication for existing contact reads', functi
             return new OAuthToken('access-token', 'refresh-token', time() + 3600);
         }
 
-        public function save(string $connection, OAuthToken $token): void {}
+        public function record(string $connection): ?OAuthTokenRecord
+        {
+            return new OAuthTokenRecord($this->get($connection), 1);
+        }
+
+        public function persist(string $connection, OAuthToken $token, ?int $expectedGeneration): bool
+        {
+            return true;
+        }
     };
     $endpoint = new class implements OAuthTokenEndpoint
     {
@@ -457,7 +502,15 @@ it('resolves an OAuth connection through the provider and manager', function () 
             return new OAuthToken('container-token', 'refresh-token', time() + 3600);
         }
 
-        public function save(string $connection, OAuthToken $token): void {}
+        public function record(string $connection): ?OAuthTokenRecord
+        {
+            return new OAuthTokenRecord($this->get($connection), 1);
+        }
+
+        public function persist(string $connection, OAuthToken $token, ?int $expectedGeneration): bool
+        {
+            return true;
+        }
     });
     config()->set('mautic.connections.main', [
         'url' => 'https://mautic.example.test',

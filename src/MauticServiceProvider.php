@@ -80,7 +80,10 @@ final class MauticServiceProvider extends ServiceProvider
                 $app->make(OAuthStateRepository::class),
                 $app->make(OAuthTokenRepository::class),
                 $app->make(OAuthTokenEndpoint::class),
+                $app->make(OAuthRefreshLock::class),
                 (int) $app['config']->get('mautic.oauth.state_ttl_seconds', 600),
+                (int) $app['config']->get('mautic.oauth.lock_wait_seconds', 5),
+                (int) $app['config']->get('mautic.oauth.lock_lease_seconds', 30),
             );
         });
         $this->app->bindIf(ConnectionFactory::class, ApiLibraryConnectionFactory::class);

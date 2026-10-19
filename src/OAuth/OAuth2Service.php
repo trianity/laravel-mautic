@@ -5,13 +5,16 @@ declare(strict_types=1);
 namespace Trianity\LaravelMautic\OAuth;
 
 use Illuminate\Contracts\Config\Repository;
+use Throwable;
 use Trianity\LaravelMautic\Configuration\ConnectionConfig;
+use Trianity\LaravelMautic\Contracts\OAuthRefreshLock;
 use Trianity\LaravelMautic\Contracts\OAuthStateRepository;
 use Trianity\LaravelMautic\Contracts\OAuthTokenEndpoint;
 use Trianity\LaravelMautic\Contracts\OAuthTokenRepository;
 use Trianity\LaravelMautic\Data\OAuthToken;
 use Trianity\LaravelMautic\Exceptions\InvalidConfiguration;
 use Trianity\LaravelMautic\Exceptions\InvalidOAuthState;
+use Trianity\LaravelMautic\Exceptions\OAuthTokenPersistenceUncertain;
 
 final readonly class OAuth2Service
 {
@@ -20,13 +23,20 @@ final readonly class OAuth2Service
         private OAuthStateRepository $states,
         private OAuthTokenRepository $tokens,
         private OAuthTokenEndpoint $endpoint,
+        private OAuthRefreshLock $lock,
         private int $stateTtlSeconds = 600,
-    ) {}
+        private int $lockWaitSeconds = 5,
+        private int $lockLeaseSeconds = 30,
+    ) {
+        if ($stateTtlSeconds <= 0 || $lockWaitSeconds <= 0 || $lockLeaseSeconds <= 0) {
+            throw new InvalidConfiguration('OAuth timing settings are invalid.');
+        }
+    }
 
-    public function authorizationUrl(string $connection): string
+    public function authorizationUrl(string $connection, string $authorizationContext): string
     {
         $settings = $this->settings($connection);
-        $state = $this->states->issue($connection, $this->stateTtlSeconds);
+        $state = $this->states->issue($connection, $authorizationContext, $this->stateTtlSeconds);
         $query = http_build_query([
             'grant_type' => 'authorization_code',
             'client_id' => $settings['client_id'],
@@ -36,25 +46,50 @@ final readonly class OAuth2Service
             'scope' => implode(',', $settings['scopes']),
         ], '', '&', PHP_QUERY_RFC3986);
 
-        return rtrim($settings['url'], '/').'/oauth/v2/authorize?'.$query;
+        return $settings['url'].'/oauth/v2/authorize?'.$query;
     }
 
-    public function complete(string $connection, string $state, string $code): OAuthToken
-    {
-        if (! $this->states->consume($connection, $state)) {
-            throw new InvalidOAuthState;
-        }
-        if ($code === '') {
+    public function complete(
+        string $connection,
+        string $state,
+        string $code,
+        ?string $authorizationContext,
+    ): OAuthToken {
+        if ($authorizationContext === '' || $authorizationContext === null || $code === '') {
             throw new InvalidOAuthState;
         }
 
-        $token = $this->endpoint->exchange($connection, $code);
-        $this->tokens->save($connection, $token);
+        $settings = $this->settings($connection);
+        if ($this->lockLeaseSeconds <= $settings['timeout']) {
+            throw new InvalidConfiguration('OAuth lock_lease_seconds must exceed the request timeout.');
+        }
 
-        return $token;
+        return $this->lock->block(
+            $connection,
+            $this->lockWaitSeconds,
+            $this->lockLeaseSeconds,
+            function () use ($connection, $state, $code, $authorizationContext): OAuthToken {
+                if (! $this->states->consume($connection, $state, $authorizationContext)) {
+                    throw new InvalidOAuthState;
+                }
+
+                $current = $this->tokens->record($connection);
+                $token = $this->endpoint->exchange($connection, $code);
+                try {
+                    $saved = $this->tokens->persist($connection, $token, $current?->generation);
+                } catch (Throwable) {
+                    throw new OAuthTokenPersistenceUncertain($connection);
+                }
+                if (! $saved) {
+                    throw new OAuthTokenPersistenceUncertain($connection);
+                }
+
+                return $token;
+            },
+        );
     }
 
-    /** @return array{url: string, client_id: string, redirect_uri: string, scopes: list<string>} */
+    /** @return array{url: string, client_id: string, redirect_uri: string, scopes: list<string>, timeout: float} */
     private function settings(string $connection): array
     {
         $values = $this->config->get('mautic.connections.'.$connection);
@@ -85,6 +120,7 @@ final readonly class OAuth2Service
             'client_id' => $clientId,
             'redirect_uri' => $redirectUri,
             'scopes' => $scopes,
+            'timeout' => $connectionConfig->timeout,
         ];
     }
 }

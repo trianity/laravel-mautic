@@ -119,15 +119,29 @@ Basic Auth uses a dedicated least-privilege integration user over HTTPS. OAuth2
 uses authorization-code and refresh-token grants. `OAuth2Service` creates an
 authorization URL and completes a callback without performing redirects itself.
 Callback state is random, hash-only at rest, connection-bound, expiring and atomically
-single-use. The host must authorize its own routes and choose when a browser redirect
-is appropriate.
+single-use. It is also bound to an opaque authorization context supplied and retained
+by the host. Callback context must come from trusted server-side state; missing or
+mismatched context neither consumes state nor exchanges a code. The host must authorize
+its own routes and choose when a browser redirect is appropriate.
 
 The default token repository encrypts access and refresh tokens with the host
-encrypter and stores one record per connection. A database lock serializes refresh
-across workers. Every lock holder re-reads storage, and a rotated token is committed
-before the owner-scoped lock is released. Missing or revoked refresh credentials raise
-`OAuthReauthorizationRequired`; background work never redirects. Token exchange and
-refresh are bounded single attempts with generic, secret-free exceptions.
+encrypter and stores one versioned record per connection. Callback exchange and refresh
+share one connection-scoped database lock. Every refresh holder re-reads storage, and
+both paths commit with a generation compare-and-set before the owner-scoped lock is
+released. This prevents an old owner whose lease expired from overwriting a newer
+rotation. The lock lease must exceed the connection request timeout. A successful
+remote rotation followed by an uncertain or lost local write is not retried and raises
+`OAuthTokenPersistenceUncertain`.
+
+Missing or revoked refresh credentials raise `OAuthReauthorizationRequired`;
+background work never redirects. Pre-request authorization, lock-timeout, token
+endpoint and uncertain-persistence failures retain typed package exceptions through
+the SDK boundary. Any other authentication failure before sending an API request is
+wrapped as the secret-free `OAuthPreRequestFailed`. `invalid_grant`, `invalid_client`,
+throttling, remote server, network and malformed token responses are classified
+without exposing response bodies or secrets. Actual post-send mutation transport loss
+remains an ambiguous mutation.
+Token exchange and refresh are bounded single attempts.
 
 The storage contracts and database/table settings are replaceable. The default
 migration is publishable and never runs automatically. The client secret is resolved
@@ -135,6 +149,12 @@ at runtime from a named environment variable or a host credential-provider bindi
 not stored in config cache. A process-local token object or memory-only lock is not
 sufficient. The package does not implement or assume client-credentials support;
 verify target Mautic behavior before expanding grants.
+
+The concurrency suite uses separate PHP processes sharing a file-backed SQLite
+database, including an explicit start barrier for concurrent state consumption. It
+therefore proves the default database coordination on SQLite, not merely cooperation
+between objects in one process. MariaDB uses the same conditional SQL contracts but
+has not been runtime-verified by this local suite.
 
 ## SDK fork policy
 

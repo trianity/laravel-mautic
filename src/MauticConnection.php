@@ -11,6 +11,7 @@ use Mautic\Auth\AuthInterface;
 use Mautic\MauticApi;
 use Trianity\LaravelMautic\Contracts\ContactReader;
 use Trianity\LaravelMautic\Contracts\ContactWriter;
+use Trianity\LaravelMautic\Contracts\OAuthAuthenticationFailureProvider;
 use Trianity\LaravelMautic\Support\SdkContactReader;
 use Trianity\LaravelMautic\Support\SdkContactWriter;
 use Trianity\LaravelMautic\Support\SdkResponseBoundary;
@@ -32,7 +33,7 @@ final readonly class MauticConnection
     /** Package-owned, normalized contact and segment reads. */
     public function contactReads(): ContactReader
     {
-        return new SdkContactReader($this->contacts(), $this->name, new SdkResponseBoundary);
+        return new SdkContactReader($this->contacts(), $this->name, $this->responseBoundary());
     }
 
     /** Package-owned, normalized explicit contact mutations. */
@@ -42,7 +43,14 @@ final readonly class MauticConnection
             $this->contacts(),
             new Segments($this->auth, $this->apiUrl),
             $this->name,
-            new SdkResponseBoundary,
+            $this->responseBoundary(),
+        );
+    }
+
+    private function responseBoundary(): SdkResponseBoundary
+    {
+        return new SdkResponseBoundary(
+            $this->auth instanceof OAuthAuthenticationFailureProvider ? $this->auth : null,
         );
     }
 

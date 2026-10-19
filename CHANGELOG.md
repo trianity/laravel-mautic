@@ -23,6 +23,8 @@
   namespaced migrations.
 - Database-shared refresh locking with lock-time token re-reads and atomic persistence
   of rotated access and refresh tokens before release.
+- Host-context-bound OAuth state, versioned token compare-and-set persistence and typed
+  pre-request authentication failures across the upstream SDK boundary.
 
 ### Fixed
 
@@ -30,6 +32,9 @@
   complete per-request outcomes without discarding successful contacts on partial failure.
 - Use paginated structured email equality queries and compare normalized returned
   values, avoiding false duplicate detection from counts or search syntax characters.
+- Coordinate callback exchange with refresh, prevent stale lock owners from overwriting
+  newer token rotations, classify token endpoint failures, and canonicalize instance
+  root/API URLs for root and subdirectory installations.
 
 No stable release, Packagist publication, durable synchronization, remote deletion or
 general DNC-removal API is included. OAuth2 client-credentials is not implemented.
