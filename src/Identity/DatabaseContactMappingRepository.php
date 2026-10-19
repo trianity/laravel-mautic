@@ -12,6 +12,7 @@ use RuntimeException;
 use Trianity\LaravelMautic\Contracts\ContactMappingRepository;
 use Trianity\LaravelMautic\Exceptions\ContactMappingChanged;
 use Trianity\LaravelMautic\Exceptions\ContactMappingConflict;
+use Trianity\LaravelMautic\Exceptions\IncompatibleContactMappingData;
 use Trianity\LaravelMautic\Exceptions\InvalidContactIdentity;
 
 final readonly class DatabaseContactMappingRepository implements ContactMappingRepository
@@ -26,12 +27,17 @@ final readonly class DatabaseContactMappingRepository implements ContactMappingR
     {
         $this->validateConnection($connection);
         $row = $this->database()->table($this->table)
-            ->where('connection', $connection)
-            ->where('local_scope', $localReference->scope)
-            ->where('local_key', $localReference->key)
+            ->where('local_identity_hash', ContactIdentityHasher::local($connection, $localReference))
             ->first();
 
-        return $row === null ? null : $this->mapping($row);
+        if ($row === null) {
+            return null;
+        }
+
+        $mapping = $this->mapping($row);
+        $this->assertLocalIdentity($mapping, $connection, $localReference);
+
+        return $mapping;
     }
 
     public function findByRemoteId(string $connection, int $remoteId): ?ContactMapping
@@ -39,11 +45,19 @@ final readonly class DatabaseContactMappingRepository implements ContactMappingR
         $this->validateConnection($connection);
         $this->validateRemoteId($remoteId);
         $row = $this->database()->table($this->table)
-            ->where('connection', $connection)
-            ->where('remote_id', $remoteId)
+            ->where('remote_identity_hash', ContactIdentityHasher::remote($connection, $remoteId))
             ->first();
 
-        return $row === null ? null : $this->mapping($row);
+        if ($row === null) {
+            return null;
+        }
+
+        $mapping = $this->mapping($row);
+        if ($mapping->connection !== $connection || $mapping->remoteId !== $remoteId) {
+            throw new IncompatibleContactMappingData('Stored contact mapping identity does not match its lookup hash.');
+        }
+
+        return $mapping;
     }
 
     public function claim(string $connection, LocalContactReference $localReference, int $remoteId): ContactMapping
@@ -55,7 +69,9 @@ final readonly class DatabaseContactMappingRepository implements ContactMappingR
             'connection' => $connection,
             'local_scope' => $localReference->scope,
             'local_key' => $localReference->key,
+            'local_identity_hash' => ContactIdentityHasher::local($connection, $localReference),
             'remote_id' => $remoteId,
+            'remote_identity_hash' => ContactIdentityHasher::remote($connection, $remoteId),
             'remote_state' => RemoteContactState::Active->value,
             'merged_into_remote_id' => null,
             'generation' => 1,
@@ -67,7 +83,8 @@ final readonly class DatabaseContactMappingRepository implements ContactMappingR
         $remote = $this->findByRemoteId($connection, $remoteId);
         if ($local !== null && $remote !== null
             && $local->remoteId === $remoteId
-            && $remote->localReference == $localReference) {
+            && $remote->localReference->scope === $localReference->scope
+            && $remote->localReference->key === $localReference->key) {
             return $local;
         }
 
@@ -83,6 +100,7 @@ final readonly class DatabaseContactMappingRepository implements ContactMappingR
         RemoteContactState $state,
         ?int $mergedIntoRemoteId = null,
     ): ContactMapping {
+        $this->assertCurrent($expected);
         if ($state === RemoteContactState::Merged) {
             if ($mergedIntoRemoteId === null || $mergedIntoRemoteId <= 0 || $mergedIntoRemoteId === $expected->remoteId) {
                 throw new InvalidContactIdentity('A merged mapping requires a different positive target remote ID.');
@@ -107,6 +125,7 @@ final readonly class DatabaseContactMappingRepository implements ContactMappingR
 
     public function relink(ContactMapping $expected, int $newRemoteId): ContactMapping
     {
+        $this->assertCurrent($expected);
         $this->validateRemoteId($newRemoteId);
         if ($newRemoteId === $expected->remoteId) {
             throw new InvalidContactIdentity('Recovery requires a different remote contact ID.');
@@ -115,6 +134,7 @@ final readonly class DatabaseContactMappingRepository implements ContactMappingR
         try {
             $updated = $this->expectedQuery($expected)->update([
                 'remote_id' => $newRemoteId,
+                'remote_identity_hash' => ContactIdentityHasher::remote($expected->connection, $newRemoteId),
                 'remote_state' => RemoteContactState::Active->value,
                 'merged_into_remote_id' => null,
                 'generation' => $expected->generation + 1,
@@ -139,11 +159,24 @@ final readonly class DatabaseContactMappingRepository implements ContactMappingR
     private function expectedQuery(ContactMapping $expected): Builder
     {
         return $this->database()->table($this->table)
-            ->where('connection', $expected->connection)
-            ->where('local_scope', $expected->localReference->scope)
-            ->where('local_key', $expected->localReference->key)
-            ->where('remote_id', $expected->remoteId)
+            ->where('local_identity_hash', ContactIdentityHasher::local(
+                $expected->connection,
+                $expected->localReference,
+            ))
+            ->where('remote_identity_hash', ContactIdentityHasher::remote(
+                $expected->connection,
+                $expected->remoteId,
+            ))
             ->where('generation', $expected->generation);
+    }
+
+    private function assertCurrent(ContactMapping $expected): void
+    {
+        $current = $this->find($expected->connection, $expected->localReference);
+        if ($current === null || $current->remoteId !== $expected->remoteId
+            || $current->generation !== $expected->generation) {
+            throw new ContactMappingChanged($expected->connection);
+        }
     }
 
     private function database(): ConnectionInterface
@@ -157,11 +190,14 @@ final readonly class DatabaseContactMappingRepository implements ContactMappingR
         $scope = $row->local_scope ?? null;
         $key = $row->local_key ?? null;
         $remoteId = $row->remote_id ?? null;
+        $localHash = $row->local_identity_hash ?? null;
+        $remoteHash = $row->remote_identity_hash ?? null;
         $state = $row->remote_state ?? null;
         $mergedIntoRemoteId = $row->merged_into_remote_id ?? null;
         $generation = $row->generation ?? null;
         if (! is_string($connection) || ! is_string($scope) || ! is_string($key)
-            || ! is_int($remoteId) || ! is_string($state)
+            || ! is_int($remoteId) || ! is_string($localHash) || ! is_string($remoteHash)
+            || ! is_string($state)
             || ($mergedIntoRemoteId !== null && ! is_int($mergedIntoRemoteId))
             || ! is_int($generation) || $generation < 1) {
             throw new RuntimeException('Stored contact mapping data is invalid.');
@@ -170,7 +206,7 @@ final readonly class DatabaseContactMappingRepository implements ContactMappingR
         $remoteState = RemoteContactState::tryFrom($state)
             ?? throw new RuntimeException('Stored contact mapping state is invalid.');
 
-        return new ContactMapping(
+        $mapping = new ContactMapping(
             $connection,
             new LocalContactReference($scope, $key),
             $remoteId,
@@ -178,6 +214,24 @@ final readonly class DatabaseContactMappingRepository implements ContactMappingR
             $mergedIntoRemoteId,
             $generation,
         );
+        if (! hash_equals(ContactIdentityHasher::local($connection, $mapping->localReference), $localHash)
+            || ! hash_equals(ContactIdentityHasher::remote($connection, $remoteId), $remoteHash)) {
+            throw new IncompatibleContactMappingData('Stored contact mapping identity hashes are invalid.');
+        }
+
+        return $mapping;
+    }
+
+    private function assertLocalIdentity(
+        ContactMapping $mapping,
+        string $connection,
+        LocalContactReference $localReference,
+    ): void {
+        if ($mapping->connection !== $connection
+            || $mapping->localReference->scope !== $localReference->scope
+            || $mapping->localReference->key !== $localReference->key) {
+            throw new IncompatibleContactMappingData('Stored contact mapping identity does not match its lookup hash.');
+        }
     }
 
     private function validateConnection(string $connection): void

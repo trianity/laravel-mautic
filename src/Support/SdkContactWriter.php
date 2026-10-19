@@ -126,9 +126,9 @@ final readonly class SdkContactWriter implements ContactWriter
             return;
         }
 
-        $normalizedEmail = $this->normalizeEmail($email);
+        $normalizedEmail = ContactEmailNormalizer::normalize($email);
         $query = new QueryBuilder;
-        $query->addWhere($query->expr()->eq('email', $email));
+        $query->addWhere($query->expr()->eq('email', $normalizedEmail));
         $start = 0;
 
         do {
@@ -153,7 +153,7 @@ final readonly class SdkContactWriter implements ContactWriter
                     $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
                 }
 
-                if ($this->normalizeEmail($returnedEmail) === $normalizedEmail) {
+                if (ContactEmailNormalizer::normalize($returnedEmail) === $normalizedEmail) {
                     throw new ContactAlreadyExists($this->connection, $operation);
                 }
             }
@@ -164,11 +164,6 @@ final readonly class SdkContactWriter implements ContactWriter
                 $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
             }
         } while ($start < $response['total']);
-    }
-
-    private function normalizeEmail(string $email): string
-    {
-        return strtolower(trim($email));
     }
 
     private function contactEmail(mixed $contact): ?string
@@ -197,7 +192,7 @@ final readonly class SdkContactWriter implements ContactWriter
                 continue;
             }
 
-            $normalized = $this->normalizeEmail($email);
+            $normalized = ContactEmailNormalizer::normalize($email);
             if (isset($seen[$normalized])) {
                 throw new ContactAlreadyExists($this->connection, MutationOperation::CreateContactsBatch);
             }

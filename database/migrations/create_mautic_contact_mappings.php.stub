@@ -18,14 +18,16 @@ return new class extends Migration
             $table->string('connection', 191);
             $table->string('local_scope', 191);
             $table->string('local_key', 191);
+            $table->char('local_identity_hash', 64);
             $table->unsignedBigInteger('remote_id');
+            $table->char('remote_identity_hash', 64);
             $table->string('remote_state', 16);
             $table->unsignedBigInteger('merged_into_remote_id')->nullable();
             $table->unsignedBigInteger('generation');
             $table->timestamps();
 
-            $table->unique(['connection', 'local_scope', 'local_key'], 'mautic_mapping_local_unique');
-            $table->unique(['connection', 'remote_id'], 'mautic_mapping_remote_unique');
+            $table->unique('local_identity_hash', 'mautic_mapping_local_unique');
+            $table->unique('remote_identity_hash', 'mautic_mapping_remote_unique');
             $table->index(['connection', 'remote_state'], 'mautic_mapping_state_index');
         });
     }

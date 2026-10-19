@@ -109,13 +109,13 @@ it('rejects an exact normalized duplicate before Mautic can merge it', function 
         new Response(200, ['Content-Type' => 'application/json'], json_encode([
             'total' => 2,
             'contacts' => [
-                ['id' => 8, 'fields' => ['all' => ['email' => ' Duplicate+tag@example.test ']]],
+                ['id' => 8, 'fields' => ['all' => ['email' => " Duplicate+tag%_'@Example.test "]]],
             ],
         ], JSON_THROW_ON_ERROR)),
     ], $history);
 
     expect(fn () => app(MauticManager::class)->connection()->contactWrites()->create(
-        ContactFields::fromArray(['email' => 'duplicate+tag@example.test'], ['email']),
+        ContactFields::fromArray(['email' => "  DUPLICATE+tag%_'@Example.test  "], ['email']),
     ))->toThrow(ContactAlreadyExists::class)
         ->and($history)->toHaveCount(2);
 
@@ -123,12 +123,23 @@ it('rejects an exact normalized duplicate before Mautic can merge it', function 
     expect($query['where'][0])->toBe([
         'col' => 'email',
         'expr' => 'eq',
-        'val' => 'duplicate+tag@example.test',
+        'val' => "duplicate+tag%_'@example.test",
     ])->and($query)->not->toHaveKey('start')
         ->and($query['limit'])->toBe('100');
 
     parse_str($history[1]['request']->getUri()->getQuery(), $secondQuery);
     expect($secondQuery['start'])->toBe('1');
+});
+
+it('rejects normalized duplicate emails within a batch before querying or posting', function () {
+    $history = [];
+    useContactWriteResponses([], $history);
+
+    expect(fn () => app(MauticManager::class)->connection()->contactWrites()->createBatch(
+        ContactFields::fromArray(['email' => ' Person@example.test '], ['email']),
+        ContactFields::fromArray(['email' => 'person@EXAMPLE.test'], ['email']),
+    ))->toThrow(ContactAlreadyExists::class)
+        ->and($history)->toBe([]);
 });
 
 it('does not treat a similar search result as a duplicate', function () {

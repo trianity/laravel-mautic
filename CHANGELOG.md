@@ -32,6 +32,10 @@
 
 ### Fixed
 
+- Enforce byte-exact contact identities with collation-independent tuple hashes,
+  original-value verification and an explicit validating upgrade migration.
+- Normalize structured email query values consistently for discovery and duplicate
+  preflight, and count repeated paginated contacts by distinct remote ID.
 - Normalize Mautic's separate indexed batch contacts, status codes and errors into
   complete per-request outcomes without discarding successful contacts on partial failure.
 - Use paginated structured email equality queries and compare normalized returned

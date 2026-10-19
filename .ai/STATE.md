@@ -38,6 +38,41 @@ Review and select the next milestone. Durable outgoing synchronization in
 `prompts/05-outbox.md` is next in roadmap order.
 Inspect the selected task's design gates before implementation.
 
+## Contact identity correction — 2026-10-19
+
+Opaque connection, scope and key values now have byte-exact identity semantics across
+database collations. Case, accents and significant leading/trailing whitespace remain
+unchanged. Fresh mapping tables enforce both identity directions through 64-character
+SHA-256 hashes of length-prefixed tuple components; repository lookups verify the
+original tuple after every hash match. Claims, reverse lookup, generation transitions
+and explicit relinking use the same keys.
+
+The separately published follow-up migration validates the earlier development table,
+rejects invalid or duplicate exact identities, backfills hashes without rewriting
+original values and replaces the collation-dependent indexes. It stops with an
+actionable exception on incompatible data and is deliberately irreversible. Feature
+tests execute the actual published fresh and upgrade migrations.
+
+Exact-email discovery and writer duplicate preflight now share trim plus ASCII
+case-folding for both structured query values and local response comparison. Structured
+parameters retain special characters and pagination; discovery deduplicates repeated
+pages by remote contact ID before deciding unique versus ambiguous. Intra-batch
+duplicates use the same policy. Mapping remains an explicit host decision.
+
+Focused correction tests cover case, accent and whitespace distinctions, connection
+and scope isolation, round-tripping, exact-repeat idempotency, both claim conflicts,
+stale state and relink conflicts, safe legacy upgrade rejection, normalized queries,
+special characters, pagination and distinct remote IDs. The real-process SQLite test
+still races two PHP processes over one shared file database; it is not a memory fake.
+The disposable case-insensitive MariaDB suite is opt-in through
+`MAUTIC_TEST_MARIADB_*` and was not configured locally, so MariaDB runtime behavior is
+not claimed from SQLite evidence. No live Mautic endpoint was called.
+
+Local `composer check` passed with strict Composer validation, Pint, Larastan level 8
+and 114 passing tests / 441 assertions; the unconfigured MariaDB test was skipped.
+The remote PHP/Laravel compatibility matrix was not rerun because no authorized push
+occurred.
+
 ## Contact identity and field ownership — 2026-10-19
 
 Recorded the schema, uniqueness, tenancy, concurrency and supported-database decision

@@ -180,8 +180,23 @@ crossed claims throw `ContactMappingConflict`. Mapping state changes and explici
 they are never recreated, merged or relinked automatically. Email is not identity, so
 changing it does not change an established mapping.
 
-Before an initial claim, exact-email discovery returns an explicit none, unique or
-ambiguous result. A unique result still requires a host-authorized claim; ambiguous
+Connection names, scopes and keys are byte-exact opaque values: case, accents and
+leading/trailing whitespace are significant and stored unchanged. SHA-256 tuple hashes
+provide database-independent lookup and uniqueness, while every match is verified
+against the original values. Hosts that ran the earlier development mapping migration
+must republish `mautic-identity-migrations` and run the explicit
+`2026_10_19_011000_add_identity_hashes_to_mautic_contact_mappings` upgrade. It validates
+and backfills without rewriting identities, and stops on incompatible data rather than
+merging mappings. The upgrade is intentionally not reversible because restoring the
+old collation-dependent unique indexes can collapse valid byte-distinct identities.
+The package includes an opt-in disposable MariaDB test using
+`MAUTIC_TEST_MARIADB_HOST`, `MAUTIC_TEST_MARIADB_DATABASE` (the name must contain
+`test`), and optional port/username/password variables. SQLite success alone is not
+evidence that a MariaDB environment passed.
+
+Before an initial claim, exact-email discovery trims and ASCII-case-folds the query and
+returned values, then returns an explicit none, unique or ambiguous result based on
+distinct remote IDs. A unique result still requires a host-authorized claim; ambiguous
 results remain available for review and are never silently selected:
 
 ```php

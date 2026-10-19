@@ -17,13 +17,15 @@ it('allows only one crossed mapping claim across real processes sharing SQLite',
         $table->string('connection', 191);
         $table->string('local_scope', 191);
         $table->string('local_key', 191);
+        $table->char('local_identity_hash', 64);
         $table->unsignedBigInteger('remote_id');
+        $table->char('remote_identity_hash', 64);
         $table->string('remote_state', 16);
         $table->unsignedBigInteger('merged_into_remote_id')->nullable();
         $table->unsignedBigInteger('generation');
         $table->timestamps();
-        $table->unique(['connection', 'local_scope', 'local_key']);
-        $table->unique(['connection', 'remote_id']);
+        $table->unique('local_identity_hash');
+        $table->unique('remote_identity_hash');
     });
     $capsule->schema()->create('mapping_ready', function (Blueprint $table): void {
         $table->string('worker')->primary();

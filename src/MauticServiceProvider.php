@@ -113,6 +113,7 @@ final class MauticServiceProvider extends ServiceProvider
             ], 'mautic-migrations');
             $identityMigration = [
                 __DIR__.'/../database/migrations/create_mautic_contact_mappings.php.stub' => database_path('migrations/2026_10_19_010000_create_mautic_contact_mappings.php'),
+                __DIR__.'/../database/migrations/add_identity_hashes_to_mautic_contact_mappings.php.stub' => database_path('migrations/2026_10_19_011000_add_identity_hashes_to_mautic_contact_mappings.php'),
             ];
             $this->publishes($identityMigration, 'mautic-migrations');
             $this->publishes($identityMigration, 'mautic-identity-migrations');

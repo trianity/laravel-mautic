@@ -1,0 +1,124 @@
+<?php
+
+declare(strict_types=1);
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+use Trianity\LaravelMautic\Exceptions\IncompatibleContactMappingData;
+use Trianity\LaravelMautic\Identity\ContactIdentityHasher;
+use Trianity\LaravelMautic\Identity\LocalContactReference;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        $connection = config('mautic.identity.database_connection');
+        $connection = is_string($connection) && $connection !== '' ? $connection : null;
+        $tableName = config('mautic.identity.mappings_table', 'mautic_contact_mappings');
+        $schema = Schema::connection($connection);
+
+        if (! $schema->hasTable($tableName)) {
+            throw new IncompatibleContactMappingData('The contact mapping table must exist before its identity-hash upgrade runs.');
+        }
+
+        $hasLocalHash = $schema->hasColumn($tableName, 'local_identity_hash');
+        $hasRemoteHash = $schema->hasColumn($tableName, 'remote_identity_hash');
+        if ($hasLocalHash !== $hasRemoteHash) {
+            throw new IncompatibleContactMappingData('The contact mapping identity-hash upgrade is incomplete; restore the table and rerun the migration.');
+        }
+
+        $database = DB::connection($connection);
+        $rows = $database->table($tableName)->orderBy('id')->get();
+        $backfill = [];
+        $localHashes = [];
+        $remoteHashes = [];
+
+        foreach ($rows as $row) {
+            $id = $row->id ?? null;
+            $namedConnection = $row->connection ?? null;
+            $scope = $row->local_scope ?? null;
+            $key = $row->local_key ?? null;
+            $remoteId = $row->remote_id ?? null;
+            if (! is_int($id) || ! is_string($namedConnection) || trim($namedConnection) === ''
+                || strlen($namedConnection) > 191 || ! is_string($scope) || ! is_string($key)
+                || ! is_int($remoteId) || $remoteId < 1) {
+                $this->incompatible();
+            }
+
+            try {
+                $reference = new LocalContactReference($scope, $key);
+            } catch (Throwable) {
+                $this->incompatible();
+            }
+            $localHash = ContactIdentityHasher::local($namedConnection, $reference);
+            $remoteHash = ContactIdentityHasher::remote($namedConnection, $remoteId);
+            if (isset($localHashes[$localHash]) || isset($remoteHashes[$remoteHash])) {
+                $this->incompatible();
+            }
+            $localHashes[$localHash] = true;
+            $remoteHashes[$remoteHash] = true;
+            $backfill[$id] = [$localHash, $remoteHash];
+
+            if ($hasLocalHash
+                && (($row->local_identity_hash ?? null) !== $localHash
+                    || ($row->remote_identity_hash ?? null) !== $remoteHash)) {
+                $this->incompatible();
+            }
+        }
+
+        if ($hasLocalHash) {
+            $identityIndexes = [
+                'mautic_mapping_local_unique' => ['local_identity_hash'],
+                'mautic_mapping_remote_unique' => ['remote_identity_hash'],
+            ];
+            foreach ($schema->getIndexes($tableName) as $index) {
+                $name = $index['name'] ?? null;
+                $columns = $index['columns'] ?? null;
+                $unique = $index['unique'] ?? false;
+                if (is_string($name) && isset($identityIndexes[strtolower($name)])
+                    && $unique === true && $columns === $identityIndexes[strtolower($name)]) {
+                    unset($identityIndexes[strtolower($name)]);
+                }
+            }
+            if ($identityIndexes !== []) {
+                throw new IncompatibleContactMappingData('The contact mapping identity-hash upgrade is incomplete; restore the table and rerun the migration.');
+            }
+
+            return;
+        }
+
+        $schema->table($tableName, function (Blueprint $table): void {
+            $table->char('local_identity_hash', 64)->nullable()->after('local_key');
+            $table->char('remote_identity_hash', 64)->nullable()->after('remote_id');
+        });
+        foreach ($backfill as $id => [$localHash, $remoteHash]) {
+            $database->table($tableName)->where('id', $id)->update([
+                'local_identity_hash' => $localHash,
+                'remote_identity_hash' => $remoteHash,
+            ]);
+        }
+
+        $schema->table($tableName, function (Blueprint $table): void {
+            $table->dropUnique('mautic_mapping_local_unique');
+            $table->dropUnique('mautic_mapping_remote_unique');
+            $table->char('local_identity_hash', 64)->nullable(false)->change();
+            $table->char('remote_identity_hash', 64)->nullable(false)->change();
+            $table->unique('local_identity_hash', 'mautic_mapping_local_unique');
+            $table->unique('remote_identity_hash', 'mautic_mapping_remote_unique');
+        });
+    }
+
+    public function down(): void
+    {
+        throw new RuntimeException('The byte-exact contact identity upgrade cannot be rolled back safely.');
+    }
+
+    private function incompatible(): never
+    {
+        throw new IncompatibleContactMappingData(
+            'Existing contact mappings are incompatible with byte-exact identity. Repair the development data or restore a backup before retrying.',
+        );
+    }
+};

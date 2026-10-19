@@ -14,6 +14,7 @@ use Mautic\Auth\BasicAuth;
 use Trianity\LaravelMautic\Contracts\ContactMappingRepository;
 use Trianity\LaravelMautic\Exceptions\ContactMappingChanged;
 use Trianity\LaravelMautic\Exceptions\ContactMappingConflict;
+use Trianity\LaravelMautic\Exceptions\IncompatibleContactMappingData;
 use Trianity\LaravelMautic\Identity\ContactDiscoveryOutcome;
 use Trianity\LaravelMautic\Identity\DatabaseContactMappingRepository;
 use Trianity\LaravelMautic\Identity\LocalContactReference;
@@ -27,21 +28,13 @@ beforeEach(function () {
         'database' => ':memory:',
         'prefix' => '',
     ]);
+    config()->set('mautic.identity.database_connection', 'identity-test');
     DB::purge('identity-test');
-
-    Schema::connection('identity-test')->create('mautic_contact_mappings', function (Blueprint $table): void {
-        $table->id();
-        $table->string('connection', 191);
-        $table->string('local_scope', 191);
-        $table->string('local_key', 191);
-        $table->unsignedBigInteger('remote_id');
-        $table->string('remote_state', 16);
-        $table->unsignedBigInteger('merged_into_remote_id')->nullable();
-        $table->unsignedBigInteger('generation');
-        $table->timestamps();
-        $table->unique(['connection', 'local_scope', 'local_key']);
-        $table->unique(['connection', 'remote_id']);
-    });
+    Schema::connection('identity-test')->dropIfExists('mautic_contact_mappings');
+    $this->artisan('vendor:publish', ['--tag' => 'mautic-identity-migrations', '--force' => true])
+        ->assertSuccessful();
+    $migration = require database_path('migrations/2026_10_19_010000_create_mautic_contact_mappings.php');
+    $migration->up();
 });
 
 it('maps an opaque host Contact reference without a User or guard dependency and isolates connections', function () {
@@ -72,6 +65,39 @@ it('maps an opaque host Contact reference without a User or guard dependency and
         ->and(DB::connection('identity-test')->table('mautic_contact_mappings')->count())->toBe(2);
 });
 
+it('preserves and distinguishes byte-exact opaque identities', function () {
+    $repository = new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'identity-test');
+    $references = [
+        ['Main', new LocalContactReference('tenant:Café', 'Contact'), 41],
+        ['main', new LocalContactReference('tenant:Café', 'Contact'), 42],
+        ['main', new LocalContactReference('tenant:cafe', 'Contact'), 43],
+        ['main', new LocalContactReference('tenant:café', 'contact'), 44],
+        ['main', new LocalContactReference('tenant:café', ' contact'), 45],
+        ['main', new LocalContactReference('tenant:café', 'contact '), 46],
+    ];
+
+    foreach ($references as [$connection, $reference, $remoteId]) {
+        $claimed = $repository->claim($connection, $reference, $remoteId);
+        expect($claimed->connection)->toBe($connection)
+            ->and($claimed->localReference->scope)->toBe($reference->scope)
+            ->and($claimed->localReference->key)->toBe($reference->key)
+            ->and($repository->claim($connection, $reference, $remoteId))->toEqual($claimed)
+            ->and($repository->find($connection, $reference))->toEqual($claimed)
+            ->and($repository->findByRemoteId($connection, $remoteId))->toEqual($claimed);
+    }
+
+    expect(DB::connection('identity-test')->table('mautic_contact_mappings')->count())->toBe(6);
+});
+
+it('rejects a stored original identity that does not match its lookup hash', function () {
+    $repository = new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'identity-test');
+    $reference = new LocalContactReference('tenant:acme', 'contact');
+    $repository->claim('main', $reference, 42);
+    DB::connection('identity-test')->table('mautic_contact_mappings')->update(['local_key' => 'different']);
+
+    expect(fn () => $repository->find('main', $reference))->toThrow(IncompatibleContactMappingData::class);
+});
+
 it('binds replaceable Laravel persistence and publishes its migration explicitly', function () {
     config()->set('mautic.identity.database_connection', 'identity-test');
 
@@ -81,7 +107,67 @@ it('binds replaceable Laravel persistence and publishes its migration explicitly
         ->assertSuccessful();
 
     expect(is_file(database_path('migrations/2026_10_19_010000_create_mautic_contact_mappings.php')))
+        ->toBeTrue()
+        ->and(is_file(database_path('migrations/2026_10_19_011000_add_identity_hashes_to_mautic_contact_mappings.php')))
         ->toBeTrue();
+
+    $upgrade = require database_path('migrations/2026_10_19_011000_add_identity_hashes_to_mautic_contact_mappings.php');
+    $upgrade->up();
+});
+
+it('upgrades the published legacy schema without changing opaque identity values', function () {
+    Schema::connection('identity-test')->drop('mautic_contact_mappings');
+    Schema::connection('identity-test')->create('mautic_contact_mappings', function (Blueprint $table): void {
+        $table->id();
+        $table->string('connection', 191);
+        $table->string('local_scope', 191);
+        $table->string('local_key', 191);
+        $table->unsignedBigInteger('remote_id');
+        $table->string('remote_state', 16);
+        $table->unsignedBigInteger('merged_into_remote_id')->nullable();
+        $table->unsignedBigInteger('generation');
+        $table->timestamps();
+        $table->unique(['connection', 'local_scope', 'local_key'], 'mautic_mapping_local_unique');
+        $table->unique(['connection', 'remote_id'], 'mautic_mapping_remote_unique');
+    });
+    $now = date('Y-m-d H:i:s');
+    DB::connection('identity-test')->table('mautic_contact_mappings')->insert([
+        ['connection' => 'Main', 'local_scope' => 'tenant:Café', 'local_key' => ' key ', 'remote_id' => 42, 'remote_state' => 'active', 'merged_into_remote_id' => null, 'generation' => 1, 'created_at' => $now, 'updated_at' => $now],
+        ['connection' => 'main', 'local_scope' => 'tenant:cafe', 'local_key' => 'key', 'remote_id' => 42, 'remote_state' => 'active', 'merged_into_remote_id' => null, 'generation' => 1, 'created_at' => $now, 'updated_at' => $now],
+    ]);
+
+    $migration = require database_path('migrations/2026_10_19_011000_add_identity_hashes_to_mautic_contact_mappings.php');
+    $migration->up();
+    $repository = new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'identity-test');
+
+    expect($repository->find('Main', new LocalContactReference('tenant:Café', ' key '))?->remoteId)->toBe(42)
+        ->and($repository->find('main', new LocalContactReference('tenant:cafe', 'key'))?->remoteId)->toBe(42)
+        ->and(Schema::connection('identity-test')->hasColumns('mautic_contact_mappings', [
+            'local_identity_hash',
+            'remote_identity_hash',
+        ]))->toBeTrue();
+});
+
+it('stops an identity upgrade when existing rows are incompatible', function () {
+    Schema::connection('identity-test')->drop('mautic_contact_mappings');
+    Schema::connection('identity-test')->create('mautic_contact_mappings', function (Blueprint $table): void {
+        $table->id();
+        $table->string('connection', 191);
+        $table->string('local_scope', 191);
+        $table->string('local_key', 191);
+        $table->unsignedBigInteger('remote_id');
+        $table->string('remote_state', 16);
+        $table->unsignedBigInteger('merged_into_remote_id')->nullable();
+        $table->unsignedBigInteger('generation');
+        $table->timestamps();
+    });
+    $row = ['connection' => 'main', 'local_scope' => 'tenant:acme', 'local_key' => 'same', 'remote_id' => 42, 'remote_state' => 'active', 'merged_into_remote_id' => null, 'generation' => 1, 'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s')];
+    DB::connection('identity-test')->table('mautic_contact_mappings')->insert([$row, $row]);
+    $migration = require database_path('migrations/2026_10_19_011000_add_identity_hashes_to_mautic_contact_mappings.php');
+
+    expect(fn () => $migration->up())->toThrow(IncompatibleContactMappingData::class)
+        ->and(Schema::connection('identity-test')->hasColumn('mautic_contact_mappings', 'local_identity_hash'))
+        ->toBeFalse();
 });
 
 it('rejects crossed identity claims and supports explicit versioned recovery', function () {
@@ -105,6 +191,15 @@ it('rejects crossed identity claims and supports explicit versioned recovery', f
         ->and($recovered->generation)->toBe(3)
         ->and($repository->findByRemoteId('main', 42))->toBeNull()
         ->and($repository->findByRemoteId('main', 84))->toEqual($recovered);
+});
+
+it('rejects relinking to a remote identity already claimed by another local reference', function () {
+    $repository = new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'identity-test');
+    $ada = $repository->claim('main', new LocalContactReference('tenant:acme', 'ada'), 42);
+    $repository->claim('main', new LocalContactReference('tenant:acme', 'grace'), 84);
+    $missing = $repository->markRemoteState($ada, RemoteContactState::Missing);
+
+    expect(fn () => $repository->relink($missing, 84))->toThrow(ContactMappingConflict::class);
 });
 
 it('records merged identity for explicit review without automatically relinking', function () {
@@ -147,7 +242,7 @@ it('returns zero one and multiple exact email discoveries without claiming ident
     $connection = new MauticConnection('main', 'https://mautic.example.test/api/', $auth);
 
     $none = $connection->contactDiscovery()->exactEmail('nobody@example.test');
-    $unique = $connection->contactDiscovery()->exactEmail('person@example.test');
+    $unique = $connection->contactDiscovery()->exactEmail(' Person@example.test ');
     $ambiguous = $connection->contactDiscovery()->exactEmail('person@example.test');
 
     expect($none->outcome)->toBe(ContactDiscoveryOutcome::None)
@@ -158,12 +253,54 @@ it('returns zero one and multiple exact email discoveries without claiming ident
         ->and(array_map(fn ($contact) => $contact->remoteId, $ambiguous->contacts))->toBe([42, 84])
         ->and(DB::connection('identity-test')->table('mautic_contact_mappings')->count())->toBe(0);
 
-    foreach ($history as $transaction) {
+    foreach ($history as $index => $transaction) {
         parse_str($transaction['request']->getUri()->getQuery(), $query);
         expect($query['where'][0] ?? null)->toMatchArray([
             'col' => 'email',
             'expr' => 'eq',
         ])
-            ->and($query['where'][0]['val'] ?? null)->toBeString();
+            ->and($query['where'][0]['val'] ?? null)->toBe([
+                'nobody@example.test',
+                'person@example.test',
+                'person@example.test',
+            ][$index]);
+    }
+});
+
+it('counts distinct remote IDs across paginated exact email discovery results', function () {
+    $history = [];
+    $special = "person+tag%_'@example.test";
+    $stack = HandlerStack::create(new MockHandler([
+        new Response(200, ['Content-Type' => 'application/json'], json_encode([
+            'total' => 3,
+            'contacts' => [
+                ['id' => 42, 'fields' => ['all' => ['email' => " PERSON+tag%_'@Example.test "]]],
+                ['id' => 84, 'fields' => ['all' => ['email' => "person+other%_'@example.test"]]],
+            ],
+        ], JSON_THROW_ON_ERROR)),
+        new Response(200, ['Content-Type' => 'application/json'], json_encode([
+            'total' => 3,
+            'contacts' => [
+                ['id' => 42, 'fields' => ['all' => ['email' => $special]]],
+            ],
+        ], JSON_THROW_ON_ERROR)),
+    ]));
+    $stack->push(Middleware::history($history));
+    $auth = new BasicAuth(new Client(['handler' => $stack]));
+    $auth->setup('user', 'password');
+    $connection = new MauticConnection('main', 'https://mautic.example.test/api/', $auth);
+
+    $result = $connection->contactDiscovery()->exactEmail("  PERSON+tag%_'@Example.test ");
+
+    expect($result->outcome)->toBe(ContactDiscoveryOutcome::Unique)
+        ->and($result->uniqueContact()?->remoteId)->toBe(42)
+        ->and($history)->toHaveCount(2);
+    foreach ($history as $transaction) {
+        parse_str($transaction['request']->getUri()->getQuery(), $query);
+        expect($query['where'][0] ?? null)->toBe([
+            'col' => 'email',
+            'expr' => 'eq',
+            'val' => $special,
+        ]);
     }
 });

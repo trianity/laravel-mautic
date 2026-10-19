@@ -26,13 +26,13 @@ final readonly class SdkContactDiscovery implements ContactDiscovery
 
     public function exactEmail(string $email): ContactDiscoveryResult
     {
-        $normalizedEmail = strtolower(trim($email));
+        $normalizedEmail = ContactEmailNormalizer::normalize($email);
         if ($normalizedEmail === '') {
             throw new InvalidReadRequest('A non-empty email is required for contact discovery.');
         }
 
         $query = new QueryBuilder;
-        $query->addWhere($query->expr()->eq('email', $email));
+        $query->addWhere($query->expr()->eq('email', $normalizedEmail));
         $offset = 0;
         $matches = [];
 
@@ -57,8 +57,8 @@ final readonly class SdkContactDiscovery implements ContactDiscovery
                     || ! is_string($remoteEmail->value())) {
                     $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
                 }
-                if (strtolower(trim($remoteEmail->value())) === $normalizedEmail) {
-                    $matches[] = $contact;
+                if (ContactEmailNormalizer::normalize($remoteEmail->value()) === $normalizedEmail) {
+                    $matches[$contact->remoteId] = $contact;
                 }
             }
 
@@ -69,6 +69,6 @@ final readonly class SdkContactDiscovery implements ContactDiscovery
             }
         } while ($offset < $response['total']);
 
-        return new ContactDiscoveryResult($normalizedEmail, $matches);
+        return new ContactDiscoveryResult($normalizedEmail, array_values($matches));
     }
 }

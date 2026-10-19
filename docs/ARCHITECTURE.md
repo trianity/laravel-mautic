@@ -47,8 +47,9 @@ treated as atomic or automatically retried.
 
 Duplicate preflights use the SDK's structured exact-equality filter, paginate all
 reported matches and compare returned email values after whitespace trimming and
-ASCII case-folding. They do not trust a search count or interpolate user values into
-Mautic's search-command syntax.
+ASCII case-folding. The query value uses that same normalization policy. They do not
+trust a search count, server collation or interpolate user values into Mautic's
+search-command syntax.
 
 All mutations publish non-retryable, side-effectful operation metadata. Transport
 loss during a create is an ambiguous outcome, not a safe retry. The deterministic
@@ -74,15 +75,21 @@ against the installed SDK and a target disposable Mautic instance.
 is the explicit tenancy/domain namespace; no Eloquent model, User, guard, current
 tenant or request state is consulted. `ContactMappingRepository` is the core seam and
 the optional database implementation is bound by default. Its two unique constraints
-are `(connection, local_scope, local_key)` and `(connection, remote_id)`. Exact claims
-are idempotent; crossed claims conflict. Generation compare-and-set protects remote
-state transitions and explicit relinking from stale writers.
+are SHA-256 keys for the length-prefixed `(connection, local_scope, local_key)` and
+`(connection, remote_id)` tuples. The original byte-exact values remain authoritative,
+round trip unchanged and are checked after every hash lookup. Case, accents and
+leading/trailing whitespace are significant across SQLite and MariaDB/MySQL regardless
+of database collation. Exact claims are idempotent; crossed claims conflict. Generation
+compare-and-set protects remote state transitions and explicit relinking from stale
+writers. A separate published migration validates and upgrades the earlier
+collation-dependent development schema without silently merging incompatible rows.
 
 Remote state is `active`, `missing`, `deleted` or `merged`; a merge may retain a
 review target without claiming it. Observation never recreates or relinks a contact.
-Exact-email discovery uses the SDK's structured equality query and returns none,
-unique or ambiguous contacts without writing a mapping. Email is not stored as
-identity, so later email changes preserve mapping continuity.
+Exact-email discovery uses the SDK's structured equality query with the same trimmed,
+ASCII-case-folded value used for local verification. It returns none, unique or
+ambiguous contacts by distinct remote ID without writing a mapping. Email is not
+stored as identity, so later email changes preserve mapping continuity.
 
 `FieldMapper` consumes only `HostContactFields` with an explicit host allowlist and
 explicit `FieldRule` aliases. Host-owned, Mautic-owned and shared host-wins/Mautic-wins

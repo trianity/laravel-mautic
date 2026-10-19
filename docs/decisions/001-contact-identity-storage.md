@@ -14,6 +14,11 @@ The package does not infer tenancy from a guard, model, database connection or c
 request. Moving a contact between tenant scopes is a new identity and requires an
 explicit host migration.
 
+Identity strings have byte-exact semantics. Case, accents and leading/trailing
+whitespace are significant. Otherwise valid values are never trimmed, lowercased or
+Unicode-normalized. Blank-after-trimming values remain invalid, and each original
+component remains limited to 191 bytes.
+
 ## Optional Laravel schema
 
 The publishable `mautic_contact_mappings` table contains:
@@ -24,7 +29,9 @@ The publishable `mautic_contact_mappings` table contains:
 | `connection` | string(191) | Named Mautic connection |
 | `local_scope` | string(191) | Host-defined tenant/domain namespace |
 | `local_key` | string(191) | Stable opaque host contact key |
+| `local_identity_hash` | char(64) | SHA-256 lookup/unique key for connection, scope and key |
 | `remote_id` | unsigned bigint | Mautic contact ID |
+| `remote_identity_hash` | char(64) | SHA-256 lookup/unique key for connection and remote ID |
 | `remote_state` | string(16) | `active`, `missing`, `deleted` or `merged` |
 | `merged_into_remote_id` | nullable unsigned bigint | Review/recovery target for `merged` only |
 | `generation` | unsigned bigint | Optimistic concurrency version, starting at 1 |
@@ -32,10 +39,17 @@ The publishable `mautic_contact_mappings` table contains:
 
 The table has these database-enforced unique constraints:
 
-1. `(connection, local_scope, local_key)` — one remote identity for one local contact
-   on a named connection;
-2. `(connection, remote_id)` — one local identity may claim a remote contact on a
-   named connection.
+1. `local_identity_hash` — one remote identity for the byte-exact
+   `(connection, local_scope, local_key)` tuple;
+2. `remote_identity_hash` — one local identity for the byte-exact
+   `(connection, remote_id)` tuple.
+
+Each hash is lowercase hexadecimal SHA-256 over length-prefixed tuple components, so
+component boundaries cannot alias. The 64-byte ASCII indexes avoid database collation,
+accent and trailing-space comparison rules and remain well below SQLite and modern
+MariaDB/MySQL index limits. Original identity columns remain authoritative and round
+trip unchanged. Every hash lookup verifies the stored original tuple byte-for-byte;
+a mismatch is treated as incompatible/corrupt storage, never as an identity match.
 
 The same local reference may map to different remote IDs on different connections.
 The same numeric remote ID on different connections is unrelated.
@@ -65,10 +79,19 @@ The implementation relies on atomic unique-index enforcement and conditional
 `UPDATE ... WHERE generation = ?` row counts. Claim does not require a multi-statement
 transaction: the insert is the serialization point and subsequent reads only classify
 its result. SQLite is covered by the default and concurrency tests. Current supported
-Laravel versions require database versions capable of the declared composite indexes;
-MariaDB/MySQL behavior must be verified in the compatibility environment before
-claiming runtime parity. No advisory locks, database-specific upserts, deferrable
-constraints or Mautic tables are used.
+Laravel versions require SHA-256 support in PHP and ordinary unique indexes over
+64-character ASCII values. MariaDB/MySQL is covered only when the opt-in disposable
+service-backed suite runs; a SQLite pass alone is not MariaDB evidence. No advisory
+locks, database-specific upserts, deferrable constraints or Mautic tables are used.
+
+Fresh installations create hash columns and hash-only unique indexes directly. An
+explicit follow-up migration upgrades the earlier development schema: it adds nullable
+hash columns, validates every original row in PHP, rejects invalid or duplicate exact
+tuples with an actionable exception, backfills both hashes, replaces the collation-
+dependent unique indexes and then makes the hashes required. It never merges, deletes
+or rewrites original identity values. Hosts that already published the earlier
+development migration must publish and run the upgrade migration; editing an already-
+run migration is not an upgrade mechanism.
 
 The migration is optional, explicitly publishable and never runs automatically.
 Hosts may replace the repository contract with equivalent durable storage, but must
