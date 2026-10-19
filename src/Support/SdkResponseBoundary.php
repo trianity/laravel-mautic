@@ -97,6 +97,27 @@ final class SdkResponseBoundary
         return $this->integer($value);
     }
 
+    public function nonNegativeInteger(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value >= 0 ? $value : null;
+        }
+
+        if (! is_string($value) || ! ctype_digit($value)) {
+            return null;
+        }
+
+        $normalized = ltrim($value, '0');
+        $normalized = $normalized === '' ? '0' : $normalized;
+        $maximum = (string) PHP_INT_MAX;
+        if (strlen($normalized) > strlen($maximum)
+            || (strlen($normalized) === strlen($maximum) && strcmp($normalized, $maximum) > 0)) {
+            return null;
+        }
+
+        return (int) $normalized;
+    }
+
     private function throwAuthenticationFailure(): void
     {
         $failure = $this->authenticationFailures?->pullAuthenticationFailure();

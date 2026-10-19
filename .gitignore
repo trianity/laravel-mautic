@@ -8,6 +8,7 @@
 /.env.*
 !/.env.example
 /tests/.env
+/tests/.oauth-acceptance/
 /.idea/
 /.vscode/
 .DS_Store

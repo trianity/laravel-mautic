@@ -47,7 +47,7 @@ it('maps real SDK contact search and memberships into typed results', function (
     $history = [];
     useContactReadResponses([
         new Response(200, ['Content-Type' => 'application/json'], json_encode([
-            'total' => 2,
+            'total' => '2',
             'contacts' => [
                 '42' => [
                     'id' => 42,
@@ -58,7 +58,7 @@ it('maps real SDK contact search and memberships into typed results', function (
                 '43' => ['id' => 43],
             ],
         ], JSON_THROW_ON_ERROR)),
-        new Response(200, ['Content-Type' => 'application/json'], '{"total":1,"lists":{"9":{"id":9,"name":"Customers","alias":"customers"}}}'),
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":"1","lists":{"9":{"id":9,"name":"Customers","alias":"customers"}}}'),
     ], $history);
 
     $reader = app(MauticManager::class)->connection()->contactReads();

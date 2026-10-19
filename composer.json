@@ -47,6 +47,7 @@
     "scripts": {
         "test": "pest",
         "test:live": "pest --configuration=phpunit.live.xml",
+        "test:oauth-live": "pest --configuration=phpunit.oauth-live.xml",
         "format": "pint",
         "format:check": "pint --test",
         "analyse": "phpstan analyse --memory-limit=1G",

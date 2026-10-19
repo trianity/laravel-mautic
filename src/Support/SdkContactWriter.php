@@ -148,7 +148,8 @@ final readonly class SdkContactWriter implements ContactWriter
                 SdkResponseMetadata::retryAfterForResponse($rawResponse, $this->contacts),
             );
 
-            if (! is_int($response['total'] ?? null) || ! is_array($response['contacts'] ?? null)) {
+            $total = $this->boundary->nonNegativeInteger($response['total'] ?? null);
+            if ($total === null || ! is_array($response['contacts'] ?? null)) {
                 $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
             }
 
@@ -165,10 +166,10 @@ final readonly class SdkContactWriter implements ContactWriter
 
             $count = count($response['contacts']);
             $start += $count;
-            if ($count === 0 && $start < $response['total']) {
+            if ($count === 0 && $start < $total) {
                 $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
             }
-        } while ($start < $response['total']);
+        } while ($start < $total);
     }
 
     private function contactEmail(mixed $contact): ?string

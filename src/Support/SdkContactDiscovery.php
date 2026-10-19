@@ -46,7 +46,8 @@ final readonly class SdkContactDiscovery implements ContactDiscovery
                 ReadOperation::SearchContacts,
                 $this->connection,
             );
-            if (! is_int($response['total'] ?? null) || ! is_array($response['contacts'] ?? null)) {
+            $total = $this->boundary->nonNegativeInteger($response['total'] ?? null);
+            if ($total === null || ! is_array($response['contacts'] ?? null)) {
                 $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
             }
 
@@ -64,10 +65,10 @@ final readonly class SdkContactDiscovery implements ContactDiscovery
 
             $count = count($response['contacts']);
             $offset += $count;
-            if ($count === 0 && $offset < $response['total']) {
+            if ($count === 0 && $offset < $total) {
                 $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
             }
-        } while ($offset < $response['total']);
+        } while ($offset < $total);
 
         return new ContactDiscoveryResult($normalizedEmail, array_values($matches));
     }

@@ -33,13 +33,14 @@ final readonly class SdkConnectionReconciliationSource
             $this->connection,
             SdkResponseMetadata::retryAfterForResponse($raw, $this->contacts),
         );
-        if (! is_int($response['total'] ?? null) || ! is_array($response['contacts'] ?? null)) {
+        $total = $this->boundary->nonNegativeInteger($response['total'] ?? null);
+        if ($total === null || ! is_array($response['contacts'] ?? null)) {
             $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
         }
-        if ($response['total'] === 0 && $response['contacts'] === []) {
+        if ($total === 0 && $response['contacts'] === []) {
             return 0;
         }
-        if ($response['total'] < 1 || count($response['contacts']) !== 1) {
+        if ($total < 1 || count($response['contacts']) !== 1) {
             $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
         }
 
@@ -66,7 +67,8 @@ final readonly class SdkConnectionReconciliationSource
             $this->connection,
             SdkResponseMetadata::retryAfterForResponse($raw, $this->contacts),
         );
-        if (! is_int($response['total'] ?? null) || ! is_array($response['contacts'] ?? null)) {
+        $total = $this->boundary->nonNegativeInteger($response['total'] ?? null);
+        if ($total === null || ! is_array($response['contacts'] ?? null)) {
             $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
         }
 
@@ -80,11 +82,11 @@ final readonly class SdkConnectionReconciliationSource
             $mapped[] = $contact;
             $previous = $contact->remoteId;
         }
-        if (count($mapped) > $limit || $response['total'] < count($mapped)
-            || ($mapped === [] && $response['total'] > 0)) {
+        if (count($mapped) > $limit || $total < count($mapped)
+            || ($mapped === [] && $total > 0)) {
             $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
         }
 
-        return new ReconciliationPage($mapped, $response['total']);
+        return new ReconciliationPage($mapped, $total);
     }
 }

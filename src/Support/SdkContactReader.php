@@ -45,7 +45,8 @@ final readonly class SdkContactReader implements ContactReader
             $this->connection,
         );
 
-        if (! is_int($response['total'] ?? null) || ! is_array($response['contacts'] ?? null)) {
+        $total = $this->boundary->nonNegativeInteger($response['total'] ?? null);
+        if ($total === null || ! is_array($response['contacts'] ?? null)) {
             $this->boundary->unexpected($operation, $this->connection);
         }
 
@@ -54,7 +55,7 @@ final readonly class SdkContactReader implements ContactReader
             $contacts[] = $this->mapper->contact($contact, $operation);
         }
 
-        return new ContactPage($contacts, $response['total'], $search->offset, $search->limit);
+        return new ContactPage($contacts, $total, $search->offset, $search->limit);
     }
 
     public function segments(int $remoteId): SegmentMemberships
@@ -66,12 +67,13 @@ final readonly class SdkContactReader implements ContactReader
             $this->connection,
         );
 
-        if (! is_int($response['total'] ?? null) || ! is_array($response['lists'] ?? null)) {
+        $total = $this->boundary->nonNegativeInteger($response['total'] ?? null);
+        if ($total === null || ! is_array($response['lists'] ?? null)) {
             $this->boundary->unexpected($operation, $this->connection);
         }
 
         $memberships = $this->mapper->segments($response['lists'], $operation);
-        if (count($memberships) !== $response['total']) {
+        if (count($memberships) !== $total) {
             $this->boundary->unexpected($operation, $this->connection);
         }
 

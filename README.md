@@ -538,6 +538,72 @@ Precreation prevents avoidable preparation loss but cannot remove the crash wind
 remote rotation and before durable local persistence. Missing optional setup produces a
 skip, not compatibility evidence. Never point this suite at production or shared contacts.
 
+### Isolated local OAuth connection acceptance
+
+The read-only OAuth acceptance suite is separate from the mutation-oriented live suite
+and from `composer check`. It accepts only the exact `https://mautic.test` origin after
+exclusive loopback resolution, requires Mautic 7.2.1 installation metadata and never
+falls back to the Basic Auth username or password. Its callback is a test-only loopback
+listener; the package service provider still registers no OAuth route.
+
+Create a dedicated Mautic OAuth2 client with Authorization Code and refresh-token grants
+and this exact redirect URI:
+
+```text
+http://127.0.0.1:8765/oauth/callback
+```
+
+Add the following to ignored `tests/.env`; never commit the actual client secret:
+
+```dotenv
+MAUTIC_OAUTH_ACCEPTANCE_TESTS=1
+MAUTIC_LIVE_URL=https://mautic.test
+MAUTIC_LIVE_INSTALL_PATH=/home/holbok/web/kasza-mautic
+MAUTIC_LIVE_SERVER_VERSION=7.2.1
+MAUTIC_LIVE_CA_BUNDLE=/etc/ssl/certs/mautic.test.crt
+MAUTIC_LIVE_OAUTH_CLIENT_ID=replace-with-dedicated-client-id
+MAUTIC_LIVE_OAUTH_CLIENT_SECRET=replace-with-dedicated-client-secret
+MAUTIC_LIVE_OAUTH_REDIRECT_URI=http://127.0.0.1:8765/oauth/callback
+```
+
+`MAUTIC_LIVE_CA_BUNDLE` is a trust anchor used with certificate and hostname verification
+enabled; it is not a `verify=false` bypass. Load the ignored file explicitly because the
+Pest bootstrap does not parse dotenv files:
+
+```bash
+set -a
+source tests/.env
+set +a
+php tests/Support/oauth_acceptance_prepare.php
+```
+
+Start the callback listener in a second terminal, then open the authorization URL printed
+by the prepare command and authorize with the dedicated API user:
+
+```bash
+set -a
+source tests/.env
+set +a
+php tests/Support/oauth_acceptance_callback.php
+```
+
+The state is expiring, stored only as a hash and bound to an opaque context kept in
+mode-0600 ignored storage. The callback process exchanges the code through the package's
+`OAuth2Service` and persists encrypted tokens in a dedicated SQLite database. It never
+prints the code or tokens. After the callback succeeds, run:
+
+```bash
+composer test:oauth-live
+```
+
+The suite starts in a new PHP process, proves persisted-token loading, performs a bounded
+API v1 collection read, rejects an isolated invalid bearer token, performs exactly one
+controlled refresh in the dedicated repository, reads again and separately probes the
+documented API v2 contact collection. Optional existing fixture reads require both
+`MAUTIC_LIVE_OAUTH_FIXTURE_CONTACT_ID` and `MAUTIC_LIVE_OAUTH_FIXTURE_EMAIL`; without a
+dedicated fixture they skip. The suite never creates, updates or deletes contacts and
+does not change DNC, consent or segment membership.
+
 ## Normalized contact reads
 
 ```php

@@ -87,6 +87,54 @@ Local `composer check` passed strict Composer validation, Pint, Larastan level 8
 192 tests / 962 assertions; four opt-in MariaDB tests were skipped by the default
 environment. Remote CI was not run.
 
+## Local OAuth connection acceptance — 2026-10-20
+
+Task 07D adds a separately selected, read-only OAuth Authorization Code acceptance
+harness for the exact `https://mautic.test` origin. It is outside `composer check` and the
+mutation-oriented live suite, requires `MAUTIC_OAUTH_ACCEPTANCE_TESTS=1`, accepts only
+exclusive loopback DNS results and never treats Basic Auth variables as OAuth fallback.
+The test-only callback binds `127.0.0.1:8765`; the package provider still registers no
+route.
+
+Preflight confirmed Mautic 7.2.1, PHP 8.5.11, ignored local credentials and passing
+non-development Composer platform requirements for both the package and installed
+Mautic. The system trust store rejects the installation's self-signed certificate. Full
+certificate and hostname verification succeeds when the installed
+`/etc/ssl/certs/mautic.test.crt` is supplied as the explicit local trust anchor; TLS
+verification and redirect restrictions remain enabled.
+
+The harness uses the package's `OAuth2Service`, expiring context-bound database state,
+encrypted database token repository, database refresh lock, managed OAuth authentication
+and existing `/api` adapter. Ignored mode-0600 storage survives the callback process so
+the acceptance suite can prove new-process token loading. Its bounded probes cover the
+API v1 contact collection, isolated rejected-token behavior, one controlled refresh and
+post-refresh read, plus a separate Bearer-only API v2 contact collection request. Fixture
+ID/email, segment and DNC reads skip unless a dedicated existing test contact is supplied.
+
+Focused offline guard/harness tests passed with 8 tests / 19 assertions. The isolated
+suite without its dedicated opt-in skipped 2 tests / 0 assertions and made no request.
+A dedicated OAuth2 client then completed browser authorization and code exchange through
+the package service. The callback process persisted the encrypted token and the separate
+Pest process loaded it. The bounded API v1 read passed; an isolated invalid Bearer request
+returned HTTP 401 without redirect; one controlled refresh advanced the dedicated token
+generation from 1 to 3 (expiry simulation plus rotated-token persistence), left a future
+expiry and supported a post-refresh read. The separate Bearer-only API v2 collection
+probe returned HTTP 200 `application/json` without redirect.
+
+The live response established that Mautic 7.2.1 reports collection `total` through the
+upstream SDK as a numeric string. A focused regression test was red before the shared
+response boundary safely normalized non-negative integer strings for contact reads,
+discovery, duplicate preflight and reconciliation; normalized DTO totals remain integers.
+`composer test:oauth-live` passed 1 test / 19 assertions and skipped the fixture-specific
+test because no dedicated contact ID/email was configured. Therefore ID, exact-email,
+segment-membership and DNC evidence remains pending. No contact, segment, DNC, consent or
+other business mutation ran. The sanitized report is
+`docs/compatibility/mautic-7.2.1-oauth-acceptance.md`.
+
+Local `composer check` passed strict Composer validation, Pint, Larastan level 8 and
+200 tests / 981 assertions; four opt-in MariaDB tests were skipped by the default
+environment. Remote CI was not run.
+
 ## Reconciliation, diagnostics and live-server harness — 2026-10-19
 
 Task 07 adds bounded, resumable contact reconciliation without treating an incomplete or

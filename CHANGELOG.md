@@ -44,8 +44,13 @@
 - A separately invoked loopback-only live Mautic suite and staged host migration guide.
 - A provenance-tracked Mautic 7.2.1 API v2 OpenAPI snapshot and evidence-based
   capability inventory for future adapter evaluation.
+- An isolated, exact-origin OAuth Authorization Code acceptance harness with encrypted
+  persistent test tokens, verified local TLS and bounded read-only API probes.
 
 ### Fixed
+
+- Normalize non-negative numeric-string collection totals returned by the Mautic 7.2.1
+  API through the upstream SDK while retaining strict integer DTO contracts.
 
 - Bind reconciliation reservation readback to the exact owner, generation, scan and
   expiry created by that invocation, preventing ownership substitution during handoff.
