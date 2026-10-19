@@ -11,15 +11,17 @@
 - Normalized read failures, read-operation safety metadata and deterministic read fake.
 - Allowlisted contact creates, PATCH-only partial updates and checked batch writes.
 - Manual segment membership commands, mutation safety metadata and deterministic fake.
+- Opt-in OAuth2 authorization-code and refresh-token lifecycle with encrypted durable
+  per-connection tokens, one-time callback state and database-shared refresh locking.
 - Pest unit/feature tests, Testbench, Pint, Larastan level 8, CI matrix.
 - Ordered implementation prompts and architecture/release/contribution guidance.
 
 ## Not implemented
 
-OAuth2/token store, local identity mappings, durable outbox/inbox, webhook endpoint,
+Local identity mappings, durable outbox/inbox, webhook endpoint,
 reconciliation, consent workflows and live Mautic integration tests. Remote deletion
-and general DNC removal are not exposed. No migrations or automatic model events
-exist. No release tag or Packagist publication exists.
+and general DNC removal are not exposed. No migration runs implicitly and no automatic
+model events exist. No release tag or Packagist publication exists.
 
 ## Verification
 
@@ -29,9 +31,36 @@ Tests exercise the real SDK with fake HTTP, not a real Mautic installation.
 
 ## Next task
 
-Review and select the next milestone. `prompts/03-oauth2.md` is next in roadmap order;
-model-independent identity mapping follows in `prompts/04-contact-identity.md`.
+Review and select the next milestone. Model-independent identity mapping in
+`prompts/04-contact-identity.md` is next in roadmap order.
 Inspect the selected task's design gates before implementation.
+
+## OAuth2 lifecycle — 2026-10-19
+
+Implemented opt-in OAuth2 beside Basic Auth through an authentication factory. The
+package exposes an explicit authorization URL/callback service but never emits an
+interactive redirect, reads request globals or starts authorization from background
+API work. Only authorization-code and refresh-token grants are implemented; no
+client-credentials assumption was added.
+
+The default database repositories store encrypted access/refresh tokens per named
+connection and hash callback state. State is expiring, connection-bound and atomically
+single-use. Refresh acquires an owner-scoped database lock, re-reads the token inside
+the lock, performs at most one refresh request and atomically saves rotation before
+release. Revoked/missing refresh tokens require explicit host-initiated reauthorization.
+OAuth client secrets are resolved at runtime rather than stored in config cache.
+
+The migration is explicitly publishable under `mautic-migrations` and never runs
+automatically. Storage contracts, table names, database connection and credential
+provider are replaceable. Focused tests cover encryption, isolation, token rotation,
+expiry, stale objects, invalid/replayed state, revoked refresh, OAuth bearer contact
+reads and unchanged Basic Auth behavior. The concurrency integration test starts three
+real PHP processes over one shared SQLite database; exactly one refresh occurs and all
+workers converge on the atomically stored rotated token. It is not a memory fake.
+Local `composer check` passed with strict Composer validation, Pint, Larastan level 8
+and 77 tests / 213 assertions. It ran in the approved unrestricted environment because
+PHPStan's loopback TCP server is unavailable in the local sandbox. No live Mautic or
+production endpoint was called, and the remote PHP/Laravel matrix was not rerun.
 
 ## Contact write corrections — 2026-10-18
 

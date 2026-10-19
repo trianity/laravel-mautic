@@ -5,10 +5,10 @@
 A model-independent Laravel integration built on the official `mautic/api-library`.
 MIT licensed; intended for publication as `trianity/laravel-mautic` on Packagist.
 
-**Status: development package, no stable release yet.** Basic Auth connections,
-normalized contact reads, explicit contact writes, manual segment commands and raw
-upstream contexts are implemented. OAuth2, webhooks, durable synchronization and
-reconciliation are planned, not available features.
+**Status: development package, no stable release yet.** Basic Auth and opt-in OAuth2
+connections, normalized contact reads, explicit contact writes, manual segment
+commands and raw upstream contexts are implemented. Webhooks, durable synchronization
+and reconciliation are planned, not available features.
 No real Mautic server compatibility is claimed until the integration milestone.
 
 ## Requirements
@@ -59,6 +59,61 @@ MAUTIC_PASSWORD=replace-with-a-dedicated-secret
 `/api` suffix is accepted. HTTPS and certificate verification are the defaults.
 `allow_http` is an explicit opt-in in `config/mautic.php` for local development.
 Connections are created lazily, so an unconfigured package can boot without a request.
+
+## OAuth2 authorization and token lifecycle
+
+OAuth2 uses Mautic's authorization-code and refresh-token grants; this package does
+not use or assume `client_credentials`. Publish and run the optional namespaced
+storage migration before enabling an OAuth2 connection:
+
+```bash
+php artisan vendor:publish --tag=mautic-migrations
+php artisan migrate
+```
+
+Set the connection's `auth` to `oauth2` and copy the commented `oauth` block from
+`config/mautic.php`. `client_secret_env` is the **name** of a runtime environment
+variable, not its value. The default credential provider reads the secret with
+`getenv()` when needed, so neither tokens nor the OAuth client secret enter the
+published configuration or Laravel's configuration cache. Applications using a
+secret manager may bind `Contracts\OAuthClientCredentialsProvider` instead.
+
+The host owns the interactive route and authorization decision. Start authorization
+only from an explicitly authorized browser action, then redirect the browser to the
+returned URL:
+
+```php
+use Trianity\LaravelMautic\OAuth\OAuth2Service;
+
+$oauth = app(OAuth2Service::class);
+$authorizationUrl = $oauth->authorizationUrl('main');
+// The host returns its own redirect response to $authorizationUrl.
+```
+
+In the configured callback, pass the explicit connection, returned state and code:
+
+```php
+$oauth->complete('main', (string) request('state'), (string) request('code'));
+```
+
+State is random, stored only as a hash, connection-bound, expiring and atomically
+consumed once. The package never reads `$_GET`/`$_SESSION`, emits a redirect or calls
+`exit`. Queue jobs and backend API calls therefore either obtain a valid token,
+perform one bounded refresh, wait for the shared database lock, or throw
+`OAuthReauthorizationRequired`; they never start an interactive flow.
+
+Access and refresh tokens are encrypted with the host `APP_KEY` and stored per named
+connection. Refresh uses a database lock shared by workers, re-reads the token after
+lock acquisition, and atomically stores access/refresh rotation before releasing the
+lock. Set `lock_lease_seconds` longer than the configured request timeout. The table
+names and database connection are configurable under `mautic.oauth`, or hosts may
+replace `OAuthTokenRepository`, `OAuthStateRepository` and `OAuthRefreshLock`.
+
+A rejected refresh token requires a new host-initiated authorization. The token
+endpoint is called once per exchange/refresh attempt and is never automatically
+retried. For recovery, confirm the named connection, client callback URL, runtime
+secret availability and migration, then begin a fresh browser authorization. Do not
+copy production credentials into support output or package configuration.
 
 ## Normalized contact reads
 

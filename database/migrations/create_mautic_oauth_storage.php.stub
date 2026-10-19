@@ -1,0 +1,46 @@
+<?php
+
+declare(strict_types=1);
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        $connection = config('mautic.oauth.database_connection');
+        $schema = Schema::connection(is_string($connection) && $connection !== '' ? $connection : null);
+
+        $schema->create(config('mautic.oauth.tokens_table', 'mautic_oauth_tokens'), function (Blueprint $table): void {
+            $table->string('connection')->primary();
+            $table->text('token_payload');
+            $table->unsignedBigInteger('expires_at');
+            $table->timestamps();
+        });
+
+        $schema->create(config('mautic.oauth.states_table', 'mautic_oauth_states'), function (Blueprint $table): void {
+            $table->string('state_hash', 64)->primary();
+            $table->string('connection')->index();
+            $table->unsignedBigInteger('expires_at')->index();
+            $table->timestamp('created_at');
+        });
+
+        $schema->create(config('mautic.oauth.locks_table', 'mautic_oauth_locks'), function (Blueprint $table): void {
+            $table->string('name')->primary();
+            $table->string('owner', 64);
+            $table->unsignedBigInteger('expires_at')->index();
+        });
+    }
+
+    public function down(): void
+    {
+        $connection = config('mautic.oauth.database_connection');
+        $schema = Schema::connection(is_string($connection) && $connection !== '' ? $connection : null);
+
+        $schema->dropIfExists(config('mautic.oauth.locks_table', 'mautic_oauth_locks'));
+        $schema->dropIfExists(config('mautic.oauth.states_table', 'mautic_oauth_states'));
+        $schema->dropIfExists(config('mautic.oauth.tokens_table', 'mautic_oauth_tokens'));
+    }
+};

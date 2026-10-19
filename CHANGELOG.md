@@ -18,6 +18,11 @@
   and deterministic `FakeContactWriter` support.
 - Explicit manual segment add/remove commands, mutation safety metadata and ambiguous
   create outcomes without automatic retries.
+- Opt-in OAuth2 authorization-code and refresh-token lifecycle with encrypted,
+  connection-scoped database token storage, one-time expiring state and publishable
+  namespaced migrations.
+- Database-shared refresh locking with lock-time token re-reads and atomic persistence
+  of rotated access and refresh tokens before release.
 
 ### Fixed
 
@@ -26,5 +31,5 @@
 - Use paginated structured email equality queries and compare normalized returned
   values, avoiding false duplicate detection from counts or search syntax characters.
 
-No stable release, Packagist publication, OAuth2, durable synchronization, remote
-deletion or general DNC-removal API is included.
+No stable release, Packagist publication, durable synchronization, remote deletion or
+general DNC-removal API is included. OAuth2 client-credentials is not implemented.

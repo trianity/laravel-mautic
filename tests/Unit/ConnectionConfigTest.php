@@ -35,7 +35,7 @@ it('rejects unsafe or unsupported configuration', function (array $overrides) {
     [['url' => 'https://mautic.example.test#fragment']],
     [['username' => ' ']],
     [['password' => ' ']],
-    [['auth' => 'oauth2']],
+    [['auth' => 'digest']],
     [['timeout' => 0]],
     [['timeout' => -1]],
     [['timeout' => '10']],
@@ -52,6 +52,23 @@ it('permits explicitly enabled HTTP for local development', function () {
     ]));
 
     expect($config->apiUrl())->toBe('http://localhost:8080/api/');
+});
+
+it('accepts OAuth2 without placing its client secret in configuration', function () {
+    $config = ConnectionConfig::fromArray('main', [
+        'url' => 'https://mautic.example.test',
+        'auth' => 'oauth2',
+        'oauth' => [
+            'client_id' => 'public-client-id',
+            'client_secret_env' => 'MAUTIC_TEST_OAUTH_SECRET',
+            'redirect_uri' => 'https://app.example.test/mautic/callback',
+        ],
+    ]);
+
+    expect($config->auth)->toBe('oauth2')
+        ->and($config->username)->toBe('')
+        ->and($config->password)->toBe('')
+        ->and($config->oauthRedirectUri)->toBe('https://app.example.test/mautic/callback');
 });
 
 it('does not include credentials in configuration exception messages', function () {

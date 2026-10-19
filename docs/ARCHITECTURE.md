@@ -16,8 +16,9 @@ constraints for later milestones; they are not a feature list.
 
 `MauticServiceProvider` merges config and lazily registers `MauticManager`.
 The manager validates a named `ConnectionConfig`, calls `ConnectionFactory` and
-caches the resulting `MauticConnection`. `ApiLibraryConnectionFactory` constructs
-upstream BasicAuth with the PSR-18 transport from `HttpClientFactory`.
+caches the resulting `MauticConnection`. `ApiLibraryConnectionFactory` delegates to
+an authentication factory, which constructs upstream BasicAuth or a managed OAuth2
+bearer adapter with the PSR-18 transport from `HttpClientFactory`.
 `contacts()` returns upstream Contacts; `api(context)` is a low-level escape hatch.
 No outbound request occurs during registration, boot or connection construction.
 
@@ -112,14 +113,28 @@ validation failures, throttling, transient server errors and ambiguous mutation
 outcomes. Future retry metadata must describe the operation's safety. Never add a
 blanket retry middleware to this transport.
 
-## Authentication roadmap
+## Authentication
 
 Basic Auth uses a dedicated least-privilege integration user over HTTPS. OAuth2
-must persist encrypted access/refresh tokens per connection, validate callback state,
-serialize refresh across workers and atomically save rotated tokens before release
-of the lock. A process-local token object or environment-variable refresh token alone
-is insufficient. Verify grants supported by the target Mautic version; do not assume
-client credentials exists. No interactive redirects from a queue job or API request.
+uses authorization-code and refresh-token grants. `OAuth2Service` creates an
+authorization URL and completes a callback without performing redirects itself.
+Callback state is random, hash-only at rest, connection-bound, expiring and atomically
+single-use. The host must authorize its own routes and choose when a browser redirect
+is appropriate.
+
+The default token repository encrypts access and refresh tokens with the host
+encrypter and stores one record per connection. A database lock serializes refresh
+across workers. Every lock holder re-reads storage, and a rotated token is committed
+before the owner-scoped lock is released. Missing or revoked refresh credentials raise
+`OAuthReauthorizationRequired`; background work never redirects. Token exchange and
+refresh are bounded single attempts with generic, secret-free exceptions.
+
+The storage contracts and database/table settings are replaceable. The default
+migration is publishable and never runs automatically. The client secret is resolved
+at runtime from a named environment variable or a host credential-provider binding,
+not stored in config cache. A process-local token object or memory-only lock is not
+sufficient. The package does not implement or assume client-credentials support;
+verify target Mautic behavior before expanding grants.
 
 ## SDK fork policy
 

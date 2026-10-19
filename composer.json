@@ -15,6 +15,8 @@
         "php": "^8.4",
         "guzzlehttp/guzzle": "^7.9",
         "illuminate/contracts": "^12.0 || ^13.0",
+        "illuminate/database": "^12.0 || ^13.0",
+        "illuminate/encryption": "^12.0 || ^13.0",
         "illuminate/support": "^12.0 || ^13.0",
         "mautic/api-library": "^4.0",
         "psr/http-client": "^1.0"
