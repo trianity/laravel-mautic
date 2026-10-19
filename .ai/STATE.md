@@ -52,6 +52,41 @@ Complete the Task 07 live-server acceptance matrix on an explicitly approved dis
 local Mautic installation before claiming a supported server version. After that evidence
 is recorded, review the next roadmap milestone; do not begin it implicitly.
 
+## Installed Mautic API v2 reference — 2026-10-19
+
+Task 07C captured the installed local Mautic 7.2.1 API v2 contract at
+`docs/reference/mautic/7.2.1/api-v2/openapi.json` using API Platform's official
+`api:openapi:export --spec-version=3` console command. The installed packages are
+`mautic/core-lib` 7.2.1 at Composer source revision
+`4a0fbebb76ac1bc84fb507227f21e103f7436d42` and `api-platform/core` 4.4.3 at
+`206a0ffc60afa7289eaf3ab73dcb1248897ff4d2`; the distribution has no application Git
+metadata. PHP 8.5.11 performed the export.
+
+The generated document is OpenAPI 3.2.0 with 68 paths, 196 operations and 475 component
+schemas. It parsed successfully; all 456 unique references are local and resolved. Its
+SHA-256 is `f1a44c2f72b1764cbdb47712e3dde0b276a22afcd8475798955bca7e67a481b4`.
+A scan found no credential, bearer-token, cookie, private-key, local-origin or
+email-address-shaped value. The adjacent README records provenance, configuration
+dependencies, attribution and validation; `capabilities.md` records the evidence limits.
+
+The contract documents contact ID reads, creates and JSON merge-patch updates, including
+nullable scalar write fields. It documents page-number collection pagination and JSON-LD
+totals plus common error representations. It does not document exact-email filtering,
+ID range filters, ordering/keyset traversal, page-size control, contact segment
+membership reads or changes, contact DNC/subscription representations, or OAuth/Bearer
+security schemes. Segment and channel CRUD are not treated as membership or subscription
+parity. These gaps leave API v2 adoption and live compatibility acceptance undecided.
+
+No runtime package code, authentication, migrations, outbox, inbox or reconciliation
+behavior changed. No live suite, HTTP compatibility request or contact mutation ran, and
+no business data was written. `MAUTIC_LIVE_USERNAME` is the canonical live-harness
+variable, and the operator has aligned the ignored local `tests/.env` without exposing
+its value.
+
+Local `composer check` passed strict Composer validation, Pint, Larastan level 8 and
+192 tests / 962 assertions; four opt-in MariaDB tests were skipped by the default
+environment. Remote CI was not run.
+
 ## Reconciliation, diagnostics and live-server harness — 2026-10-19
 
 Task 07 adds bounded, resumable contact reconciliation without treating an incomplete or
@@ -97,8 +132,9 @@ with 1 test / 10 assertions, exercising the canonical schema and recovery transa
 Invoking the isolated live suite without its opt-in variables produced
 4 skipped tests / 0 assertions and made no network request; this verifies gating only.
 No live HTTP acceptance test was authorized or executed, so no Mautic server version is
-yet compatibility-verified. The adjacent local installation metadata reports Mautic core
-7.1.1, but inspecting that metadata is not runtime compatibility evidence. Remote CI has not
+yet compatibility-verified. At that earlier inspection, the adjacent local installation
+metadata reported Mautic core 7.1.1, but inspecting that metadata was not runtime
+compatibility evidence. Remote CI has not
 been rerun for these uncommitted changes. Local `composer check` passed strict Composer
 validation, Pint, Larastan level 8 and 168 tests / 797 assertions, with the four opt-in
 MariaDB tests skipped by the default environment.

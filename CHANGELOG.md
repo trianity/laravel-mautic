@@ -42,6 +42,8 @@
   keyset pagination, replay deduplication, request spacing and data-minimized findings.
 - Connection diagnostics and dry-run-first, bounded, audited missing-mapping recovery.
 - A separately invoked loopback-only live Mautic suite and staged host migration guide.
+- A provenance-tracked Mautic 7.2.1 API v2 OpenAPI snapshot and evidence-based
+  capability inventory for future adapter evaluation.
 
 ### Fixed
 
