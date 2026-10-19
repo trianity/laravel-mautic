@@ -9,9 +9,10 @@
 | Host domain | Contact model, identity verification, field ownership, CRM workflows and consent evidence | Host application |
 
 The connection foundation, normalized contact reads, explicit partial writes, manual
-segment commands, identity mappings, field ownership and transactional outgoing
-contact outbox and verified webhook inbox are implemented today. The remaining sections
-state design constraints for later milestones; they are not a feature list.
+segment commands, identity mappings, field ownership, transactional outgoing contact
+outbox, verified webhook inbox, bounded reconciliation and operational diagnostics are
+implemented today. The remaining sections state design constraints for later milestones;
+they are not a feature list.
 
 ## Current runtime
 
@@ -166,10 +167,26 @@ field handling. Allowed deletes mark mapping state only. Unknown, disallowed and
 events remain inspectable without exposing customer payloads in logs. Full details are
 in `docs/decisions/003-webhook-inbox.md`.
 
-## Reconciliation (planned)
+## Reconciliation and diagnostics
 
-Reconciliation must be bounded, paginated, resumable and observable. Do not infer
-deletion from an incomplete scan or a failed page. Missing events must be recoverable.
+The explicit reconciliation service captures a per-connection maximum remote ID and
+advances an ascending ID keyset cursor in bounded pages. Its checkpoint, ID-only
+observations and finding codes are durable. A page and its cursor commit atomically, so
+a failed request or process crash replays the uncommitted page; unique scan/remote-ID
+keys deduplicate that overlap. Configured page size, pages per run and minimum interval
+bound load. A scan performs no host business write and never infers deletion or empty
+segment membership from absence, an incomplete page or a failure.
+
+Missing mapping recovery is separate. It keyset-pages active local mappings and checks
+each remote ID. Dry-run is the default; only a normalized not-found result is actionable.
+Applying requires explicit actor/reason input and same-database identity/reconciliation
+storage so the generation-checked `missing` transition and audit commit atomically. No
+automatic relink, recreation or deletion exists.
+
+Connection diagnostics expose only status counts, current checkpoint metadata, finding
+codes and non-secret OAuth token health. They do not decrypt credentials or return local
+identity, contact, outbox or webhook payload data. Details are in
+`docs/decisions/004-reconciliation.md`.
 
 Use the SDK's error payloads and transport exceptions to distinguish auth failures,
 validation failures, throttling, transient server errors and ambiguous mutation

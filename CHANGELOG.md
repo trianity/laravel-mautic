@@ -38,6 +38,10 @@
   durable batch storage, asynchronous recovery and shared per-contact processing leases.
 - Model-independent inbound contact projection through existing mappings and field
   ownership, including stale-event handling and explicit consent/DNC separation.
+- Bounded resumable contact reconciliation with per-connection high-water checkpoints,
+  keyset pagination, replay deduplication, request spacing and data-minimized findings.
+- Connection diagnostics and dry-run-first, bounded, audited missing-mapping recovery.
+- A separately invoked loopback-only live Mautic suite and staged host migration guide.
 
 ### Fixed
 

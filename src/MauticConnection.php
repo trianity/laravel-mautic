@@ -13,6 +13,7 @@ use Trianity\LaravelMautic\Contracts\ContactDiscovery;
 use Trianity\LaravelMautic\Contracts\ContactReader;
 use Trianity\LaravelMautic\Contracts\ContactWriter;
 use Trianity\LaravelMautic\Contracts\OAuthAuthenticationFailureProvider;
+use Trianity\LaravelMautic\Support\SdkConnectionReconciliationSource;
 use Trianity\LaravelMautic\Support\SdkContactDiscovery;
 use Trianity\LaravelMautic\Support\SdkContactReader;
 use Trianity\LaravelMautic\Support\SdkContactWriter;
@@ -53,6 +54,12 @@ final readonly class MauticConnection
             $this->name,
             $this->responseBoundary(),
         );
+    }
+
+    /** Stable, bounded contact pages for durable reconciliation. */
+    public function reconciliationReads(): SdkConnectionReconciliationSource
+    {
+        return new SdkConnectionReconciliationSource($this->contacts(), $this->name, $this->responseBoundary());
     }
 
     private function responseBoundary(): SdkResponseBoundary

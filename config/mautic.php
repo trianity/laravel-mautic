@@ -45,6 +45,18 @@ return [
         'lease_seconds' => 30,
     ],
 
+    'reconciliation' => [
+        // Keep this equal to identity.database_connection for atomic mapping repair audits.
+        'database_connection' => null,
+        'checkpoints_table' => 'mautic_reconciliation_checkpoints',
+        'observations_table' => 'mautic_reconciliation_observations',
+        'findings_table' => 'mautic_reconciliation_findings',
+        'audits_table' => 'mautic_reconciliation_audits',
+        'page_size' => 100,
+        'minimum_page_interval_seconds' => 1,
+        'maximum_pages_per_run' => 1,
+    ],
+
     'connections' => [
         'main' => [
             // Instance root URL, including a subdirectory if applicable.

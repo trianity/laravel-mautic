@@ -22,27 +22,84 @@
 - Opt-in verified webhook inbox with connection-specific raw-body HMAC authentication,
   encrypted durable events, asynchronous recovery, shared contact leases and explicit
   host-owned inbound projection through mapping and field-ownership policies.
+- Bounded per-connection reconciliation with durable checkpoints, scan watermarks,
+  keyset pagination, replay-safe observations/findings and explicit mapping recovery.
+- Privacy-safe connection diagnostics and separately configured, opt-in live-server
+  acceptance suites that are excluded from the default test command.
 - Pest unit/feature tests, Testbench, Pint, Larastan level 8, CI matrix.
 - Ordered implementation prompts and architecture/release/contribution guidance.
 
 ## Not implemented
 
-General reconciliation, consent workflows and live Mautic integration tests. No webhook
-route is automatically exposed. Remote deletion and general DNC removal are not exposed.
-No migration runs implicitly and no automatic model events exist. No release tag or
-Packagist publication exists.
+Consent workflows and completed live-Mautic compatibility acceptance. The live harness
+exists, but no server version is considered verified until its explicitly enabled tests
+pass against a validated disposable target. No webhook route is automatically exposed.
+Remote deletion and general DNC removal are not exposed. No migration runs implicitly,
+no automatic database reset or model event exists, and no compatibility bridge for
+unreleased development schemas is provided. No release tag or Packagist publication
+exists.
 
 ## Verification
 
-See the initialization verification entry appended after the first CI run.
-The initialization workspace has no PHP/Composer; runtime checks use GitHub Actions.
-Tests exercise the real SDK with fake HTTP, not a real Mautic installation.
+See the dated entries below. Default tests exercise the real SDK with fake HTTP and do
+not contact a Mautic installation. Live-server checks have their own configuration and
+require explicit target-specific opt-in.
 
 ## Next task
 
-Review and select the next milestone. Reconciliation and integration validation in
-`prompts/07-reconciliation.md` is next in roadmap order.
-Inspect the selected task's design gates before implementation.
+Complete the Task 07 live-server acceptance matrix on an explicitly approved disposable
+local Mautic installation before claiming a supported server version. After that evidence
+is recorded, review the next roadmap milestone; do not begin it implicitly.
+
+## Reconciliation, diagnostics and live-server harness — 2026-10-19
+
+Task 07 adds bounded, resumable contact reconciliation without treating an incomplete or
+failed remote listing as deletion evidence. Each byte-exact connection has a durable
+checkpoint with a captured remote-ID high-water mark. Pages use ascending keyset
+pagination inside that fixed range; observations and findings are written atomically with
+the compare-and-set cursor. Replaying a page is deduplicated by scan and remote contact.
+The watermark request, successful pages and failed attempts all durably advance a
+configurable next-request time, while page/run limits additionally bound scheduled work.
+Restarting creates a new scan without changing mappings by itself.
+
+Reconciliation records only remote IDs, mapping references, state classifications and
+sanitized failures. It reports unmapped remote contacts and non-active mappings, while
+failed reads retain the cursor and never infer missing contacts or empty memberships.
+Diagnostics summarize mapping states, outbox blockers, inbox failures, reconciliation
+findings and OAuth token health without decrypting stored payloads or revealing tokens or
+full contact data.
+
+Mapping recovery is dry-run by default and scans active mappings in bounded stable pages.
+Only an explicit remote `ContactNotFound` result is eligible for `--apply-missing`;
+application requires an actor and reason. The active-to-missing transition and operator
+audit are one database transaction guarded by the observed mapping generation. The
+identity and reconciliation stores must use the same database connection for that atomic
+repair.
+
+The package publishes one canonical reconciliation migration containing checkpoints,
+observations, findings and recovery audits. It has no schema-version detection, upgrade
+bridge or automatic database reset. Existing disposable development schemas must be
+recreated deliberately by their operator. The default suite remains network-free.
+
+`phpunit.live.xml` and `composer test:live` provide a separately selected acceptance
+harness. It requires exact opt-in, a loopback disposable target, an acknowledged test
+environment, a dedicated `lm-live-*` fixture prefix and the expected installed Mautic version.
+Its cases cover Basic Auth, contact create/PATCH/read, DNC, manual segments, optional
+dynamic-segment convergence, optional webhook capture/signature evidence, and separately
+opted-in OAuth refresh. Cleanup targets only contacts created by that run; rotated OAuth
+credentials are written only to an explicitly configured mode-0600 output file.
+
+Focused SQLite reconciliation tests passed with 7 tests / 106 assertions. The dedicated
+opt-in MariaDB reconciliation test passed against the supplied disposable shared database
+with 1 test / 10 assertions, exercising the canonical schema and database-backed recovery
+transaction. Invoking the isolated live suite without its opt-in variables produced
+4 skipped tests / 0 assertions and made no network request; this verifies gating only.
+No live HTTP acceptance test was authorized or executed, so no Mautic server version is
+yet compatibility-verified. The adjacent local installation metadata reports Mautic core
+7.1.1, but inspecting that metadata is not runtime compatibility evidence. Remote CI has not
+been rerun for these uncommitted changes. Local `composer check` passed strict Composer
+validation, Pint, Larastan level 8 and 168 tests / 797 assertions, with the four opt-in
+MariaDB tests skipped by the default environment.
 
 ## Verified webhook inbox and inbound sync — 2026-10-19
 

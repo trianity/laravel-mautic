@@ -7,10 +7,14 @@ namespace Trianity\LaravelMautic;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Queue\Queue;
 use Illuminate\Support\ServiceProvider;
+use Trianity\LaravelMautic\Console\MauticDiagnosticsCommand;
+use Trianity\LaravelMautic\Console\ReconcileContactsCommand;
+use Trianity\LaravelMautic\Console\ReconcileMappingsCommand;
 use Trianity\LaravelMautic\Contracts\AuthenticationFactory;
 use Trianity\LaravelMautic\Contracts\Clock;
 use Trianity\LaravelMautic\Contracts\ConnectionFactory;
 use Trianity\LaravelMautic\Contracts\ContactMappingRepository;
+use Trianity\LaravelMautic\Contracts\ContactReaderProvider;
 use Trianity\LaravelMautic\Contracts\ContactSyncTransport;
 use Trianity\LaravelMautic\Contracts\HttpClientFactory;
 use Trianity\LaravelMautic\Contracts\InboundContactProjector;
@@ -19,6 +23,7 @@ use Trianity\LaravelMautic\Contracts\OAuthRefreshLock;
 use Trianity\LaravelMautic\Contracts\OAuthStateRepository;
 use Trianity\LaravelMautic\Contracts\OAuthTokenEndpoint;
 use Trianity\LaravelMautic\Contracts\OAuthTokenRepository;
+use Trianity\LaravelMautic\Contracts\ReconciliationSource;
 use Trianity\LaravelMautic\Contracts\WebhookSecretProvider;
 use Trianity\LaravelMautic\Exceptions\InvalidConfiguration;
 use Trianity\LaravelMautic\Http\GuzzleHttpClientFactory;
@@ -44,9 +49,17 @@ use Trianity\LaravelMautic\Outbox\OutboxDispatcher;
 use Trianity\LaravelMautic\Outbox\OutboxOperator;
 use Trianity\LaravelMautic\Outbox\OutboxPoller;
 use Trianity\LaravelMautic\Outbox\OutboxProcessor;
+use Trianity\LaravelMautic\Reconciliation\ContactReconciler;
+use Trianity\LaravelMautic\Reconciliation\DatabaseMappingInventory;
+use Trianity\LaravelMautic\Reconciliation\DatabaseMappingRecovery;
+use Trianity\LaravelMautic\Reconciliation\DatabaseMauticDiagnostics;
+use Trianity\LaravelMautic\Reconciliation\DatabaseReconciliationStore;
+use Trianity\LaravelMautic\Reconciliation\MappingRecoveryService;
 use Trianity\LaravelMautic\Support\ApiLibraryAuthenticationFactory;
 use Trianity\LaravelMautic\Support\ApiLibraryConnectionFactory;
+use Trianity\LaravelMautic\Support\ManagerContactReaderProvider;
 use Trianity\LaravelMautic\Support\ManagerContactSyncTransport;
+use Trianity\LaravelMautic\Support\ManagerReconciliationSource;
 
 final class MauticServiceProvider extends ServiceProvider
 {
@@ -61,6 +74,8 @@ final class MauticServiceProvider extends ServiceProvider
         $this->app->bindIf(OAuthTokenEndpoint::class, HttpOAuthTokenEndpoint::class);
         $this->app->bindIf(AuthenticationFactory::class, ApiLibraryAuthenticationFactory::class);
         $this->app->bindIf(ContactSyncTransport::class, ManagerContactSyncTransport::class);
+        $this->app->bindIf(ContactReaderProvider::class, ManagerContactReaderProvider::class);
+        $this->app->bindIf(ReconciliationSource::class, ManagerReconciliationSource::class);
         $this->app->singletonIf(ContactMappingRepository::class, function ($app): ContactMappingRepository {
             $connection = $app['config']->get('mautic.identity.database_connection');
             $table = $app['config']->get('mautic.identity.mappings_table', 'mautic_contact_mappings');
@@ -192,6 +207,52 @@ final class MauticServiceProvider extends ServiceProvider
                 (int) $app['config']->get('mautic.inbox.lease_seconds', 30),
             );
         });
+        $this->app->singleton(DatabaseReconciliationStore::class, function ($app): DatabaseReconciliationStore {
+            return new DatabaseReconciliationStore(
+                $app['db'],
+                $app->make(Clock::class),
+                $this->reconciliationDatabaseConnection(),
+                $this->reconciliationTable('checkpoints_table', 'mautic_reconciliation_checkpoints'),
+                $this->reconciliationTable('observations_table', 'mautic_reconciliation_observations'),
+                $this->reconciliationTable('findings_table', 'mautic_reconciliation_findings'),
+            );
+        });
+        $this->app->singleton(DatabaseMappingInventory::class, function ($app): DatabaseMappingInventory {
+            return new DatabaseMappingInventory(
+                $app['db'],
+                $app->make(ContactMappingRepository::class),
+                $this->identityDatabaseConnection(),
+                $this->identityTable(),
+            );
+        });
+        $this->app->singleton(DatabaseMappingRecovery::class, function ($app): DatabaseMappingRecovery {
+            if ($this->identityDatabaseConnection() !== $this->reconciliationDatabaseConnection()) {
+                throw new InvalidConfiguration(
+                    'Atomic mapping recovery requires reconciliation and identity storage on the same database connection.',
+                );
+            }
+
+            return new DatabaseMappingRecovery(
+                $app['db'],
+                $app->make(Clock::class),
+                $this->identityDatabaseConnection(),
+                $this->identityTable(),
+                $this->reconciliationTable('audits_table', 'mautic_reconciliation_audits'),
+            );
+        });
+        $this->app->singleton(MappingRecoveryService::class);
+        $this->app->singleton(ContactReconciler::class, function ($app): ContactReconciler {
+            return new ContactReconciler(
+                $app->make(DatabaseReconciliationStore::class),
+                $app->make(ReconciliationSource::class),
+                $app->make(ContactMappingRepository::class),
+                $app->make(Clock::class),
+                (int) $app['config']->get('mautic.reconciliation.page_size', 100),
+                (int) $app['config']->get('mautic.reconciliation.minimum_page_interval_seconds', 1),
+                (int) $app['config']->get('mautic.reconciliation.maximum_pages_per_run', 1),
+            );
+        });
+        $this->app->singleton(DatabaseMauticDiagnostics::class);
         $this->app->bindIf(ConnectionFactory::class, ApiLibraryConnectionFactory::class);
         $this->app->singleton(MauticManager::class);
     }
@@ -221,6 +282,16 @@ final class MauticServiceProvider extends ServiceProvider
             ];
             $this->publishes($inboxMigration, 'mautic-migrations');
             $this->publishes($inboxMigration, 'mautic-inbox-migrations');
+            $reconciliationMigration = [
+                __DIR__.'/../database/migrations/create_mautic_reconciliation.php.stub' => database_path('migrations/2026_10_19_040000_create_mautic_reconciliation.php'),
+            ];
+            $this->publishes($reconciliationMigration, 'mautic-migrations');
+            $this->publishes($reconciliationMigration, 'mautic-reconciliation-migrations');
+            $this->commands([
+                ReconcileContactsCommand::class,
+                ReconcileMappingsCommand::class,
+                MauticDiagnosticsCommand::class,
+            ]);
         }
     }
 
@@ -248,6 +319,37 @@ final class MauticServiceProvider extends ServiceProvider
     private function inboxTable(string $key, string $default): string
     {
         $table = $this->app->make(Repository::class)->get('mautic.inbox.'.$key, $default);
+
+        return is_string($table) && $table !== '' ? $table : $default;
+    }
+
+    private function identityDatabaseConnection(): ?string
+    {
+        $name = $this->app->make(Repository::class)->get('mautic.identity.database_connection');
+
+        return is_string($name) && $name !== '' ? $name : null;
+    }
+
+    private function identityTable(): string
+    {
+        $table = $this->app->make(Repository::class)->get(
+            'mautic.identity.mappings_table',
+            'mautic_contact_mappings',
+        );
+
+        return is_string($table) && $table !== '' ? $table : 'mautic_contact_mappings';
+    }
+
+    private function reconciliationDatabaseConnection(): ?string
+    {
+        $name = $this->app->make(Repository::class)->get('mautic.reconciliation.database_connection');
+
+        return is_string($name) && $name !== '' ? $name : null;
+    }
+
+    private function reconciliationTable(string $key, string $default): string
+    {
+        $table = $this->app->make(Repository::class)->get('mautic.reconciliation.'.$key, $default);
 
         return is_string($table) && $table !== '' ? $table : $default;
     }

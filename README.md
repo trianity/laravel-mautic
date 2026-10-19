@@ -9,8 +9,8 @@ MIT licensed; intended for publication as `trianity/laravel-mautic` on Packagist
 connections, normalized contact reads, explicit contact writes, manual segment
 commands, durable identity mappings, field ownership rules, transactional outgoing
 synchronization, a verified webhook inbox and raw upstream contexts are implemented.
-General reconciliation is planned, not an available feature.
-No real Mautic server compatibility is claimed until the integration milestone.
+Bounded reconciliation and connection diagnostics are implemented. No real Mautic
+server compatibility is claimed until the corresponding opt-in live probes pass.
 
 ## Requirements
 
@@ -422,6 +422,101 @@ semantic hashes under a case-insensitive collation and the database-backed share
 lease on the disposable MariaDB configured by `MAUTIC_TEST_MARIADB_*`. It is real shared
 storage evidence, but not a separate-process inbox stress test.
 
+## Reconciliation and diagnostics
+
+Publish the canonical reconciliation schema separately. It creates current checkpoints,
+ID-only observations, finding codes and operator audits; it does not store contact fields,
+emails, segment lists, DNC data or webhook payloads:
+
+```bash
+php artisan vendor:publish --tag=mautic-reconciliation-migrations
+php artisan migrate
+```
+
+Advance at most the configured number of stable ID-ordered pages per scheduler run:
+
+```bash
+php artisan mautic:reconcile main
+php artisan mautic:diagnose main
+```
+
+The first request captures the current maximum remote contact ID. Pages use `id > cursor`
+and `id <= high water`, ordered by ID. The watermark request, each successful page and a
+failed attempt all persist the next allowed request time. Observation rows and the cursor
+commit together.
+A failed request retains its cursor, so a retry overlaps the uncommitted page and unique
+scan/remote-ID keys suppress duplicate observations. Contacts created above the high
+water wait for the next explicit scan. `page_size`, `maximum_pages_per_run` and
+`minimum_page_interval_seconds` bound API load. Start another scan only deliberately:
+
+```bash
+php artisan mautic:reconcile main --restart
+```
+
+Remote scans record unmapped contacts and remote contacts whose mapping is already
+non-active. They never infer deletion from absence, a failed request or an incomplete
+scan, and never replace segment membership with an empty list.
+
+Stale active mappings use a separate bounded recovery command. It performs authoritative
+contact reads and treats only a normalized 404 as missing. Dry-run is the default:
+
+```bash
+php artisan mautic:reconcile-mappings main --limit=50
+```
+
+After independent confirmation, applying requires all three explicit inputs:
+
+```bash
+php artisan mautic:reconcile-mappings main --limit=50 \
+    --apply-missing --actor=operator-id --reason=confirmed_404
+```
+
+The default implementation requires `identity.database_connection` and
+`reconciliation.database_connection` to be identical. The expected active mapping is
+changed to `missing` and its audit is inserted atomically. It does not delete, recreate
+or relink a contact. Use `--after=<remote-id>` for the next bounded mapping page.
+
+Diagnostics return state counts, current scan status/finding counts and OAuth token
+health without decrypting tokens or returning contact data, local identity values,
+command/event payloads, credentials or upstream messages. The package performs no
+automatic retention deletion; hosts own the observation/finding/audit retention policy.
+See [decision 004](docs/decisions/004-reconciliation.md) for the crash model and
+[the host migration guide](docs/HOST_MIGRATION.md) before replacing existing Form posts.
+
+## Opt-in live Mautic proof
+
+`tests/Live` is excluded from `composer test` and `composer check`. The dedicated command
+also skips before networking unless `MAUTIC_LIVE_TESTS=1` is set. It accepts only a
+loopback Mautic URL, requires the exact disposable acknowledgement, verifies the expected
+installed `mautic/core-lib` version from a local installation path and creates random
+contacts under a required `lm-live-*` fixture prefix:
+
+```bash
+export MAUTIC_LIVE_TESTS=1
+export MAUTIC_LIVE_DISPOSABLE=I_UNDERSTAND_THIS_DELETES_OWN_FIXTURES
+export MAUTIC_LIVE_URL=http://127.0.0.1:8080
+export MAUTIC_LIVE_USERNAME=dedicated-api-user
+export MAUTIC_LIVE_PASSWORD=replace-me
+export MAUTIC_LIVE_FIXTURE_PREFIX=lm-live-local
+export MAUTIC_LIVE_INSTALL_PATH=/absolute/path/to/local/mautic
+export MAUTIC_LIVE_SERVER_VERSION=7.1.1
+composer test:live
+```
+
+The core probe verifies Basic Auth, create, partial PATCH, DNC reads and cleanup after
+re-reading the exact fixture email. `MAUTIC_LIVE_STATIC_SEGMENT_ID` additionally verifies
+manual add/read/remove. Dynamic segment convergence requires a preconfigured disposable
+rule plus `MAUTIC_LIVE_DYNAMIC_SEGMENT_ID`, `MAUTIC_LIVE_DYNAMIC_FIELD` and
+`MAUTIC_LIVE_DYNAMIC_VALUE`; its wait is bounded.
+
+Webhook proof requires a local receiver configured in Mautic to append JSONL records with
+`body_base64` and `signature` to `MAUTIC_LIVE_WEBHOOK_CAPTURE_FILE`, plus
+`MAUTIC_LIVE_WEBHOOK_SECRET`. OAuth refresh has a separate
+`MAUTIC_LIVE_OAUTH_TESTS=1` gate and requires dedicated client credentials, refresh token
+and an absolute `MAUTIC_LIVE_OAUTH_ROTATED_TOKEN_FILE`; the rotated token is immediately
+written there with mode `0600`. Missing optional setup produces a skip, not compatibility
+evidence. Never point this suite at production or shared contacts.
+
 ## Normalized contact reads
 
 ```php
@@ -497,8 +592,8 @@ throws `ContactUpdateTargetNotFound`; it is never recreated with PUT. Single and
 batch creates perform an exact-email preflight when a non-empty email is present and
 throw `ContactAlreadyExists` for a known match. This prevents known Mautic email
 merges, but it is not an atomic uniqueness guarantee: a concurrent creator can race
-the preflight. Durable identity, idempotency and reconciliation belong to later
-milestones.
+the preflight. Use the durable identity, outbox and reconciliation mechanisms described
+above for those separate guarantees and recovery paths.
 
 Batch writes return a `ContactBatch` whose `items` retain each original request index.
 Each item is explicitly `successful`, `failed` or `unknown`, with a successful

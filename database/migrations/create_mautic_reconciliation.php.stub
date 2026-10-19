@@ -1,0 +1,77 @@
+<?php
+
+declare(strict_types=1);
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        $connection = config('mautic.reconciliation.database_connection');
+        $schema = Schema::connection(is_string($connection) && $connection !== '' ? $connection : null);
+
+        $schema->create(config('mautic.reconciliation.checkpoints_table', 'mautic_reconciliation_checkpoints'), function (Blueprint $table): void {
+            $table->char('connection_hash', 64)->primary();
+            $table->string('connection', 191);
+            $table->string('scan_id', 64)->unique();
+            $table->unsignedBigInteger('high_water_remote_id')->nullable();
+            $table->unsignedBigInteger('cursor_remote_id')->default(0);
+            $table->string('status', 24);
+            $table->unsignedSmallInteger('page_size');
+            $table->unsignedBigInteger('observed_count')->default(0);
+            $table->unsignedBigInteger('finding_count')->default(0);
+            $table->unsignedInteger('request_count')->default(0);
+            $table->unsignedBigInteger('next_page_at')->nullable();
+            $table->string('last_failure_kind', 32)->nullable();
+            $table->unsignedBigInteger('started_at');
+            $table->unsignedBigInteger('completed_at')->nullable();
+            $table->timestamps();
+        });
+
+        $schema->create(config('mautic.reconciliation.observations_table', 'mautic_reconciliation_observations'), function (Blueprint $table): void {
+            $table->id();
+            $table->string('scan_id', 64);
+            $table->char('connection_hash', 64);
+            $table->unsignedBigInteger('remote_id');
+            $table->unsignedBigInteger('observed_at');
+            $table->unique(['scan_id', 'remote_id'], 'mautic_reconciliation_scan_remote_unique');
+            $table->index(['connection_hash', 'remote_id'], 'mautic_reconciliation_observation_connection_index');
+        });
+
+        $schema->create(config('mautic.reconciliation.findings_table', 'mautic_reconciliation_findings'), function (Blueprint $table): void {
+            $table->id();
+            $table->string('scan_id', 64);
+            $table->char('connection_hash', 64);
+            $table->unsignedBigInteger('remote_id');
+            $table->string('kind', 32);
+            $table->unsignedBigInteger('detected_at');
+            $table->unique(['scan_id', 'remote_id', 'kind'], 'mautic_reconciliation_finding_unique');
+            $table->index(['connection_hash', 'kind'], 'mautic_reconciliation_finding_connection_index');
+        });
+
+        $schema->create(config('mautic.reconciliation.audits_table', 'mautic_reconciliation_audits'), function (Blueprint $table): void {
+            $table->id();
+            $table->char('connection_hash', 64);
+            $table->string('connection', 191);
+            $table->unsignedBigInteger('remote_id');
+            $table->string('action', 32);
+            $table->string('actor', 64);
+            $table->string('reason_code', 64);
+            $table->unsignedBigInteger('created_at');
+            $table->index(['connection_hash', 'created_at'], 'mautic_reconciliation_audit_connection_index');
+        });
+    }
+
+    public function down(): void
+    {
+        $connection = config('mautic.reconciliation.database_connection');
+        $schema = Schema::connection(is_string($connection) && $connection !== '' ? $connection : null);
+        $schema->dropIfExists(config('mautic.reconciliation.audits_table', 'mautic_reconciliation_audits'));
+        $schema->dropIfExists(config('mautic.reconciliation.findings_table', 'mautic_reconciliation_findings'));
+        $schema->dropIfExists(config('mautic.reconciliation.observations_table', 'mautic_reconciliation_observations'));
+        $schema->dropIfExists(config('mautic.reconciliation.checkpoints_table', 'mautic_reconciliation_checkpoints'));
+    }
+};
