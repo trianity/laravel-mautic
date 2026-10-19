@@ -94,6 +94,16 @@ function finishReconciliationWorker(array $worker): void
     expect(proc_close($process))->toBe(0, $stdout."\n".$stderr);
 }
 
+function waitForReconciliationWorker(Manager $capsule, string $worker): void
+{
+    $deadline = microtime(true) + 5;
+    while (! $capsule->table('reconciliation_ready')->where('worker', $worker)->exists()
+        && microtime(true) < $deadline) {
+        usleep(10_000);
+    }
+    expect($capsule->table('reconciliation_ready')->where('worker', $worker)->exists())->toBeTrue();
+}
+
 it('atomically permits only one eligible reconciliation request across processes', function () {
     [$capsule, $databasePath] = sharedReconciliationProcessDatabase();
     $workers = [
@@ -131,5 +141,60 @@ it('recovers an abandoned reservation and rejects both delayed old success and f
         ->and($capsule->table('mautic_reconciliation_checkpoints')->value('status'))->toBe('completed')
         ->and($capsule->table('mautic_reconciliation_checkpoints')->value('last_failure_kind'))->toBeNull()
         ->and($capsule->table('reconciliation_results')->where('worker', 'old')->value('result'))->toBe('success-rejected,failure-rejected');
+    unlink($databasePath);
+});
+
+it('never substitutes a replacement reservation during update-to-readback handoff', function (string $oldResult) {
+    [$capsule, $databasePath] = sharedReconciliationProcessDatabase();
+    $old = startReconciliationWorker($databasePath, 'handoff-'.$oldResult, 'old');
+    waitForReconciliationWorker($capsule, 'old-reservation-updated');
+
+    $capsule->table('reconciliation_control')->where('name', 'now')->update(['value' => 1_010]);
+    $replacement = startReconciliationWorker($databasePath, 'replacement', 'replacement');
+    waitForReconciliationWorker($capsule, 'replacement-reserved');
+    $owned = $capsule->table('mautic_reconciliation_checkpoints')->first();
+
+    $capsule->table('reconciliation_ready')->insert(['worker' => 'release-old']);
+    finishReconciliationWorker($old);
+
+    $current = $capsule->table('mautic_reconciliation_checkpoints')->first();
+    expect($capsule->table('reconciliation_remote_calls')->where('worker', 'old')->count())->toBe(0)
+        ->and($current->scan_id)->toBe($owned->scan_id)
+        ->and($current->generation)->toBe($owned->generation)
+        ->and($current->reservation_owner)->toBe($owned->reservation_owner)
+        ->and($current->reservation_expires_at)->toBe($owned->reservation_expires_at)
+        ->and($current->status)->toBe('running');
+
+    $capsule->table('reconciliation_ready')->insert(['worker' => 'release-replacement']);
+    finishReconciliationWorker($replacement);
+    expect($capsule->table('reconciliation_results')->where('worker', 'replacement')->value('result'))->toBe('completed')
+        ->and($capsule->table('mautic_reconciliation_checkpoints')->value('status'))->toBe('completed');
+    unlink($databasePath);
+})->with(['success', 'failure']);
+
+it('rejects an old handoff when restart replaces its scan and reservation', function () {
+    [$capsule, $databasePath] = sharedReconciliationProcessDatabase();
+    $old = startReconciliationWorker($databasePath, 'handoff-success', 'old');
+    waitForReconciliationWorker($capsule, 'old-reservation-updated');
+
+    $capsule->table('reconciliation_control')->where('name', 'now')->update(['value' => 1_010]);
+    $replacement = startReconciliationWorker($databasePath, 'restart-replacement', 'replacement');
+    waitForReconciliationWorker($capsule, 'replacement-reserved');
+    $owned = $capsule->table('mautic_reconciliation_checkpoints')->first();
+
+    $capsule->table('reconciliation_ready')->insert(['worker' => 'release-old']);
+    finishReconciliationWorker($old);
+
+    $current = $capsule->table('mautic_reconciliation_checkpoints')->first();
+    expect($capsule->table('reconciliation_remote_calls')->where('worker', 'old')->count())->toBe(0)
+        ->and($current->scan_id)->toBe($owned->scan_id)
+        ->and($current->generation)->toBe($owned->generation)
+        ->and($current->reservation_owner)->toBe($owned->reservation_owner)
+        ->and($current->status)->toBe('running');
+
+    $capsule->table('reconciliation_ready')->insert(['worker' => 'release-replacement']);
+    finishReconciliationWorker($replacement);
+    expect($capsule->table('reconciliation_results')->where('worker', 'replacement')->value('result'))->toBe('completed')
+        ->and($capsule->table('mautic_reconciliation_checkpoints')->value('status'))->toBe('completed');
     unlink($databasePath);
 });

@@ -19,7 +19,12 @@ increments the durable request count and advances the local minimum request time
 HTTP. No row lock or transaction crosses the network call. Success and failure commits
 require the same scan, generation and owner. Expiry permits crash recovery; delayed old
 results, late failures after completion and results from a restarted scan are rejected.
-The reservation lifetime must exceed every configured Mautic request timeout.
+After the conditional update, readback is qualified by the exact connection hash, scan,
+new generation, owner and expiry created by that invocation. If expiry recovery or restart
+replaces the row during this handoff, the old invocation receives no reservation and must
+not send HTTP or modify the replacement. This is local ownership attribution, not remote
+fencing after a later lease expiry. The reservation lifetime must exceed every configured
+Mautic request timeout.
 
 The page's observations, findings and cursor commit in one local transaction. A failed
 request does not advance the cursor. A process failure before that transaction causes

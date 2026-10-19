@@ -2,10 +2,16 @@
 
 declare(strict_types=1);
 
+use Illuminate\Container\Container;
 use Illuminate\Database\Capsule\Manager;
+use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Events\Dispatcher;
 use Trianity\LaravelMautic\Contracts\Clock;
 use Trianity\LaravelMautic\Contracts\ReconciliationSource;
+use Trianity\LaravelMautic\Exceptions\MauticReadException;
 use Trianity\LaravelMautic\Identity\DatabaseContactMappingRepository;
+use Trianity\LaravelMautic\Read\ReadFailureKind;
+use Trianity\LaravelMautic\Read\ReadOperation;
 use Trianity\LaravelMautic\Reconciliation\ContactReconciler;
 use Trianity\LaravelMautic\Reconciliation\DatabaseReconciliationStore;
 use Trianity\LaravelMautic\Reconciliation\ReconciliationPage;
@@ -17,6 +23,7 @@ $mode = $argv[2] ?? '';
 $worker = $argv[3] ?? '';
 $capsule = new Manager;
 $capsule->addConnection(['driver' => 'sqlite', 'database' => $databasePath, 'prefix' => '']);
+$capsule->setEventDispatcher(new Dispatcher(new Container));
 $capsule->setAsGlobal();
 $capsule->getConnection()->statement('PRAGMA busy_timeout = 5000');
 $clock = new class($capsule) implements Clock
@@ -29,13 +36,25 @@ $clock = new class($capsule) implements Clock
     }
 };
 $store = new DatabaseReconciliationStore($capsule->getDatabaseManager(), $clock);
-$source = new class($capsule, $worker) implements ReconciliationSource
+$source = new class($capsule, $worker, $mode) implements ReconciliationSource
 {
-    public function __construct(private Manager $database, private string $worker) {}
+    public function __construct(
+        private Manager $database,
+        private string $worker,
+        private string $mode,
+    ) {}
 
     public function highWatermark(string $connection): int
     {
         $this->database->table('reconciliation_remote_calls')->insert(['worker' => $this->worker]);
+        if ($this->mode === 'handoff-failure') {
+            throw new MauticReadException(
+                ReadFailureKind::RemoteServer,
+                ReadOperation::SearchContacts,
+                $connection,
+                503,
+            );
+        }
         usleep(100_000);
 
         return 0;
@@ -47,7 +66,46 @@ $source = new class($capsule, $worker) implements ReconciliationSource
     }
 };
 
-if ($mode === 'race') {
+if (str_starts_with($mode, 'handoff-')) {
+    $reservationUpdated = false;
+    $capsule->getConnection()->listen(function (QueryExecuted $query) use ($capsule, $worker, &$reservationUpdated): void {
+        if ($reservationUpdated || ! str_starts_with($query->sql, 'update "mautic_reconciliation_checkpoints"')) {
+            return;
+        }
+        $reservationUpdated = true;
+        $capsule->table('reconciliation_ready')->insert(['worker' => $worker.'-reservation-updated']);
+        $deadline = microtime(true) + 5;
+        while (! $capsule->table('reconciliation_ready')->where('worker', 'release-'.$worker)->exists()
+            && microtime(true) < $deadline) {
+            usleep(10_000);
+        }
+    });
+    (new ContactReconciler(
+        $store,
+        $source,
+        new DatabaseContactMappingRepository($capsule->getDatabaseManager()),
+        $clock,
+        minimumPageIntervalSeconds: 0,
+        requestReservationSeconds: 5,
+    ))->run('main');
+} elseif ($mode === 'replacement' || $mode === 'restart-replacement') {
+    $checkpoint = $store->begin('main', 10, $mode === 'restart-replacement');
+    $reservation = $store->reserve($checkpoint, 10, 5)
+        ?? throw new RuntimeException('The replacement worker did not reserve the request.');
+    $capsule->table('reconciliation_ready')->insert(['worker' => $worker.'-reserved']);
+    $deadline = microtime(true) + 5;
+    while (! $capsule->table('reconciliation_ready')->where('worker', 'release-'.$worker)->exists()
+        && microtime(true) < $deadline) {
+        usleep(10_000);
+    }
+    try {
+        $store->setHighWatermark($reservation, 0);
+        $result = 'completed';
+    } catch (RuntimeException) {
+        $result = 'rejected';
+    }
+    $capsule->table('reconciliation_results')->insert(['worker' => $worker, 'result' => $result]);
+} elseif ($mode === 'race') {
     $capsule->table('reconciliation_ready')->insert(['worker' => $worker]);
     $deadline = microtime(true) + 5;
     while ($capsule->table('reconciliation_ready')->count() < 2 && microtime(true) < $deadline) {

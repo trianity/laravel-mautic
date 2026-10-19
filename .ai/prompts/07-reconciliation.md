@@ -214,3 +214,98 @@ pending until separately authorized and actually demonstrated.
 
 Do not modify vendor, commit credentials, publish a release, introduce
 development compatibility bridges, or begin Task 08.
+
+===
+
+## Task 07B — Preserve reservation ownership during handoff
+
+Fix the remaining race in DatabaseReconciliationStore::reserve().
+
+Read AGENTS.md, .ai/STATE.md and the current reconciliation implementation
+and concurrency tests first.
+
+### Finding
+
+reserve() conditionally updates the checkpoint with a newly generated
+owner and incremented generation, then returns:
+
+    return $this->get($expected->connection);
+
+That unqualified read can return another worker's reservation.
+
+Example:
+1. Worker A successfully reserves generation 1 with owner A.
+2. A pauses after the UPDATE but before the following SELECT.
+3. A's reservation expires.
+4. Worker B reserves generation 2 with owner B.
+5. A resumes and reads B's checkpoint.
+6. A can now issue a request and submit a result using B's credentials
+   for the local reservation, defeating stale-result rejection.
+
+The current abandoned-reservation test pauses after reserve() returns,
+so it does not cover this handoff gap.
+
+### Required correction
+
+Ensure reserve() can return only the reservation created by that
+specific invocation.
+
+Bind the returned value to the exact connection, scan ID, newly generated
+owner, generation and expiry established by its successful UPDATE.
+
+If another worker or restart has replaced the reservation before the
+handoff completes:
+- Return no reservation, or use an explicit existing lost-reservation
+  outcome that the caller handles safely.
+- Do not return the replacement worker's checkpoint as owned work.
+- Do not issue HTTP under another worker's reservation.
+- Do not clear, release or modify the replacement reservation.
+
+Use a focused solution, such as an ownership-qualified read with
+validation or a short atomic update/read transaction. Do not hold
+database transactions or row locks during HTTP.
+
+Review ContactReconciler's handling of an unsuccessful handoff. Returning
+a current checkpoint for reporting must not authorize a network request.
+
+Do not claim that this fix remotely fences an HTTP request after a
+later lease expiry. Its purpose is to prevent ownership substitution
+and preserve correct local result attribution.
+
+### Regression test
+
+Add a deterministic test with separate PHP processes sharing a real
+file-backed database.
+
+Place a controlled barrier specifically after A's successful reservation
+UPDATE and before its reservation readback:
+
+1. Pause A at that boundary.
+2. Advance the shared clock beyond A's expiry.
+3. Let B acquire a replacement reservation and keep it active.
+4. Resume A.
+5. Verify A does not receive B's reservation or send HTTP using it.
+6. Verify A cannot commit success or failure against B's reservation.
+7. Verify B's ownership and checkpoint remain intact and B can finish.
+
+Use narrow test instrumentation; do not add public runtime hooks solely
+to orchestrate the test.
+
+Also cover a restart replacing the scan during the same handoff gap.
+Retain existing ordinary-race, abandoned-reservation and stale-result
+tests.
+
+### Validation and scope
+
+Run focused reconciliation/concurrency tests and composer check,
+including Pint and Larastan level 8.
+
+Keep the PHP 8.4/8.5 and Laravel 12/13 CI matrix unchanged. Run existing
+opt-in MariaDB tests only if their dedicated configuration is available.
+
+No new migration, compatibility bridge, framework or live HTTP test is
+required. Do not modify vendor, publish a release or begin Task 08.
+
+Update .ai/STATE.md and the decision record where necessary. Report the
+root cause, correction, regression coverage, executed checks and results.
+Keep live Mautic compatibility acceptance pending.

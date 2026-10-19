@@ -45,6 +45,8 @@
 
 ### Fixed
 
+- Bind reconciliation reservation readback to the exact owner, generation, scan and
+  expiry created by that invocation, preventing ownership substitution during handoff.
 - Reserve reconciliation HTTP work atomically in shared storage, reject stale results,
   recover abandoned reservations and retain accurate durable request spacing/counts.
 - Preserve reconciliation `Retry-After` metadata, validate SDK pagination evidence and

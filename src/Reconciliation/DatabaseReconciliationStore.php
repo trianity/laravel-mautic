@@ -251,6 +251,8 @@ final readonly class DatabaseReconciliationStore
         }
 
         $owner = bin2hex(random_bytes(32));
+        $generation = $expected->generation + 1;
+        $expiresAt = $now + $reservationSeconds;
         $query = $this->expected($expected)
             ->whereIn('status', [ReconciliationStatus::Running->value, ReconciliationStatus::Failed->value])
             ->where(function (Builder $query) use ($now): void {
@@ -263,16 +265,29 @@ final readonly class DatabaseReconciliationStore
             'status' => ReconciliationStatus::Running->value,
             'request_count' => $expected->requestCount + 1,
             'next_page_at' => $now + max(0, $minimumIntervalSeconds),
-            'generation' => $expected->generation + 1,
+            'generation' => $generation,
             'reservation_owner' => $owner,
-            'reservation_expires_at' => $now + $reservationSeconds,
+            'reservation_expires_at' => $expiresAt,
             'updated_at' => $this->timestamp($now),
         ]);
         if ($updated !== 1) {
             return null;
         }
 
-        return $this->get($expected->connection) ?? throw new RuntimeException('The reconciliation checkpoint was lost.');
+        $row = $this->database()->table($this->checkpointsTable)
+            ->where('connection_hash', ContactIdentityHasher::connection($expected->connection))
+            ->where('scan_id', $expected->scanId)
+            ->where('generation', $generation)
+            ->where('reservation_owner', $owner)
+            ->where('reservation_expires_at', $expiresAt)
+            ->first();
+        if ($row === null) {
+            return null;
+        }
+        $reservation = $this->map($row);
+        $this->assertConnection($reservation, $expected->connection);
+
+        return $reservation;
     }
 
     public function observationCount(string $scanId): int

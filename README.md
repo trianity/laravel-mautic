@@ -445,7 +445,10 @@ and `id <= high water`, ordered by ID. Every eligible request is atomically rese
 the shared database before HTTP, with an owner, generation and bounded expiry. The
 reservation records request accounting and the next allowed request time before the
 network call; result commits require the same generation and owner. Expired reservations
-can be recovered, while delayed success/failure and pre-restart results are rejected.
+can be recovered, while delayed success/failure and pre-restart results are rejected. A
+successful conditional reservation is read back only through its exact scan, generation,
+owner and expiry. If replacement happens before that handoff finishes, the old invocation
+receives no owned work and sends no request under the replacement worker's reservation.
 `request_reservation_seconds` must exceed every configured request timeout.
 
 Observation rows and the cursor commit together.

@@ -153,6 +153,31 @@ reconciliation suites passed together with 2 tests / 22 assertions. The isolated
 suite remained gated with 4 skipped tests / 0 assertions and made no HTTP request. No
 live Mautic compatibility run or remote PHP/Laravel CI matrix was executed.
 
+## Reconciliation reservation handoff correction — 2026-10-19
+
+Task 07B closes the update-to-readback ownership substitution window. A successful
+conditional reservation update is now read back only with its exact connection hash,
+scan ID, newly incremented generation, random owner and expiry. If expiry recovery or an
+explicit restart replaces the reservation before readback, the old invocation receives
+no owned reservation. `ContactReconciler` may return the current checkpoint for reporting,
+but it does not issue HTTP or commit a result under the replacement worker's ownership.
+The replacement row is neither released nor modified. This provides local attribution;
+it does not remotely fence a request after a later reservation expiry.
+
+The deterministic regression uses separate PHP processes sharing one persistent
+file-backed SQLite database. A database query listener pauses worker A after its
+successful reservation UPDATE and before readback. The shared clock then expires A,
+worker B takes ownership (or restarts the scan and reserves it), and A resumes. Both
+success and typed-failure HTTP paths are covered: A sends no request and cannot commit
+either outcome, while B's complete ownership tuple remains intact and B completes.
+This is real shared-storage process concurrency, not an in-memory fake.
+
+The focused reconciliation/concurrency run passed 25 tests / 251 assertions. Local
+`composer check` passed strict Composer validation, Pint, Larastan level 8 and
+192 tests / 962 assertions; four opt-in MariaDB tests were skipped by the default environment.
+The configured disposable MariaDB reconciliation test then passed with 1 test / 18
+assertions. No live HTTP test or remote PHP/Laravel CI matrix was executed.
+
 ## Verified webhook inbox and inbound sync — 2026-10-19
 
 Task 06 adds opt-in `WebhookInbox::receive()` without registering a route. It verifies
