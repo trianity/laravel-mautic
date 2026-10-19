@@ -124,8 +124,8 @@ deliver all stored revisions sequentially; incomplete lower revisions block newe
 The lease must exceed a declared complete-operation budget, but it is not remote fencing.
 An expired in-flight operation becomes ambiguous and blocks later delivery until
 reconciliation. SQLite proves shared multi-process coordination and this expiry protocol
-but does not model InnoDB row-lock scheduling; a disposable MariaDB suite checks fresh
-and upgrade migrations, collation-independent aggregates and the shared lease contract.
+but does not model InnoDB row-lock scheduling; a disposable MariaDB suite checks the
+canonical final schema, collation-independent aggregates and the shared lease contract.
 
 Idempotent field updates can retry bounded transient authentication, throttling, server,
 timeout and transport failures. Numeric `Retry-After` is propagated from the current SDK

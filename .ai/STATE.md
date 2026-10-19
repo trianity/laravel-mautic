@@ -84,13 +84,10 @@ authorized push occurred.
 
 ## Durable outgoing synchronization correction — 2026-10-19
 
-Task 05A replaces newer-wins supersession with strict per-aggregate sequential delivery.
-Every lower revision must complete before a higher revision starts, preserving disjoint
-partial changes and create-before-update prerequisites. Failed, delayed, blocked and
-ambiguous commands stop the sequence until their documented operator recovery succeeds.
-The 05B forward correction supersedes the original migration policy: retained legacy
-`superseded` rows require reconciliation rather than returning directly to pending.
-Connection hashes, delivery stages and durable OAuth connection blockers remain.
+Tasks 05A, 05B and 05C finalize strict per-aggregate sequential delivery. Every lower
+revision must complete before a higher revision starts, preserving disjoint partial
+changes and create-before-update prerequisites. Failed, delayed, blocked and ambiguous
+commands stop the sequence until their documented operator recovery succeeds.
 
 Lease expiry is no longer treated as proof that a remote request stopped. Any expired
 in-flight operation becomes ambiguous and blocks later revisions. The configured lease
@@ -111,24 +108,14 @@ The installed SDK adapter now reads response headers only when the current resul
 an HTTP response exists. First-request transport failures retain typed exceptions, and
 headers from a previous response cannot supply stale retry metadata.
 
-Focused correction coverage includes sequential partial updates, create prerequisites,
-out-of-order jobs, blockers, create 5xx, mapping persistence failure with remote-ID
-evidence, OAuth blocker/resume behavior, Retry-After minimums, actual SDK transport
-failures, the published upgrade, and real multi-process shared-storage lease expiry.
-Local `composer check` passed strict Composer validation, Pint, Larastan level 8 and
-142 tests / 580 assertions; three opt-in MariaDB tests were skipped in the default
-environment. The disposable MariaDB outbox suite then passed fresh and upgrade
-migrations with 11 assertions. No live Mautic or host application was called. Remote
-PHP/Laravel CI was not rerun because no push occurred.
-
-## Durable outgoing synchronization recovery correction — 2026-10-19
-
-Task 05B prevents historical regressions by retaining legacy superseded payloads as
-`ambiguous` instead of replaying them. The new forward migration also repairs hosts that
-already ran the earlier 05A conversion: identifiable pending lower revisions with a
-higher stored revision move behind the explicit reconciliation barrier, while completed
-commands remain completed. Fresh installations carry a migration-policy marker from
-their initial schema.
+The package publishes one canonical 020000 migration containing the complete commands,
+aggregate locks, operator audits and OAuth connection-block schema. Its rollback drops
+those tables in reverse order. Historical outbox correction, reconciliation and bridge
+migrations, migration-progress tracking and legacy recovery metadata were removed. The
+package is unreleased, so disposable development installations that ran earlier Task 05
+stubs must recreate their package outbox schema before applying this migration. The
+package does not automatically reset a host database; `migrate:fresh` must not be run
+against a host application database or production database copy.
 
 Ambiguous updates now have two focused operator decisions: confirm the revision applied,
 or explicitly authorize replay. Both require an active matching contact mapping and a
@@ -140,18 +127,16 @@ The bounded poller selects only the lowest unresolved revision per aggregate bef
 limit and connection-block filtering, avoiding starvation while retaining expired-worker
 recovery. When create returns an ID and its first evidence write fails, the processor now
 carries that exact ID into the owned ambiguity transition. If storage stays unavailable
-or the process dies first, expiry remains the conservative fallback.
+or the process dies first, expiry remains the conservative fallback. Runtime coverage
+retains operator recovery, fault injection, poller fairness and separate PHP processes
+over one shared file-backed SQLite database; the concurrency evidence is not an
+in-memory fake.
 
-Focused SQLite tests cover old and fresh migration paths, same-field and disjoint legacy
-payloads, applied/replay update decisions, atomic audit rollback, blocked aggregate
-fairness, expired processing, connection blocks and targeted database failure after a
-known create ID. The existing concurrency tests still use separate PHP processes over a
-shared file-backed SQLite database, not an in-memory fake. Local `composer check` passed
-strict Composer validation, Pint, Larastan level 8 and 153 tests / 634 assertions; the
-three opt-in database tests were skipped in the default offline run. The disposable
-MariaDB outbox suite then passed its fresh, pre-05A and already-ran-05A upgrade coverage
-with 14 assertions. No live Mautic or host application was called, and remote CI was not
-rerun because no push occurred.
+Local `composer check` passed Composer validation, Pint, Larastan level 8 and 151 tests
+/ 633 assertions; the two opt-in MariaDB tests were skipped in that default run. The
+dedicated disposable MariaDB outbox suite then passed the final schema and shared lease
+contract with 1 test / 12 assertions. No host database was reset, no live Mautic endpoint
+was called, and remote CI was not rerun because no authorized push occurred.
 
 ## Contact identity correction — 2026-10-19
 

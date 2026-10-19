@@ -368,3 +368,174 @@ Report:
 - Migration behavior before and after Task 05A.
 - Operator recovery prerequisites and remaining remote limitations.
 - Checks actually executed, their results, and checks not executed.
+
+===
+
+## Task 05C — Consolidate and refactor outbox migrations
+
+Refactor the outbox migrations as a coherent whole. Replace the
+incremental correction chain with the smallest safe migration structure.
+
+Read AGENTS.md, .ai/STATE.md, the previous Task 05 instructions, the
+published migration mappings, migration tests, and decision 002 first.
+
+### Target structure
+
+Prefer:
+1. One canonical create migration containing the complete current
+   outbox schema for fresh installations.
+2. One consolidated upgrade/reconciliation migration for existing
+   development installations.
+
+Consolidate the responsibilities of the current correction migrations
+where safe. Avoid retaining several migrations that independently
+modify the same recovery state.
+
+Do not blindly delete or rename published migration files. First
+account for Laravel's migration ledger and installations that already
+ran any earlier version. Preserve historical migration names or a
+minimal compatibility bridge where required.
+
+The target is minimal, understandable migration code with safe upgrade
+behavior, not an arbitrary one-file limit at the expense of correctness.
+
+### Supported starting states
+
+Handle:
+- A fresh installation.
+- The original Task 05 schema.
+- Task 05A already applied, including superseded rows converted to pending.
+- Task 05B already applied.
+- An interrupted correction with some schema changes persisted and
+  data reconciliation incomplete.
+
+Keep completed commands completed. Preserve command identities,
+payloads, remote-ID evidence, audit history, mappings and OAuth blockers.
+
+Historical commands that cannot safely be replayed must remain behind
+an explicit reconciliation barrier. Do not merge partial payloads or
+replay older revisions across completed newer revisions automatically.
+
+### Fix interruption and retry safety
+
+The current forward migration uses the existence of legacy_recovery
+as evidence that reconciliation has completed. This is incorrect.
+
+If the column is created and execution stops before or during the
+pending-row repair, rerunning the migration skips the unfinished work.
+
+Separate schema capability from repair completion. Design durable,
+explicit progress/completion tracking, or an equivalent demonstrably
+safe resumable protocol.
+
+Requirements:
+- Schema changes may already exist after a failed run.
+- Data repair must resume safely after partial progress.
+- Completion is recorded only after all required repair succeeds.
+- Repeating a completed migration must not quarantine legitimate new
+  commands or reactivate commands already reconciled by an operator.
+- Never infer successful data repair solely from column existence.
+- Do not depend on transactional DDL; MariaDB must be supported.
+- State any worker-pause requirements for running the upgrade.
+- Keep database-specific differences explicit and contained.
+
+Avoid introducing a general migration framework for this focused task.
+
+### Regression coverage
+
+Test migration behavior and subsequent outbox eligibility, including:
+- Fresh installation using the complete canonical schema.
+- Upgrade from each supported historical state.
+- Legacy v1 pending/superseded with v2 completed.
+- Retained disjoint partial payloads.
+- Interruption after schema creation but before data repair.
+- Interruption after only part of the repair.
+- Successful rerun after each interruption.
+- Repetition after successful completion.
+- Legitimate commands created after migration completion remaining
+  eligible.
+- Previously audited operator recovery not being undone.
+
+Use realistic Laravel migration-ledger coverage where migration names
+or compatibility bridges affect which files execute.
+
+Retain the real database and multi-process tests already present.
+Extend the opt-in disposable MariaDB tests to cover the interruption
+and rerun behavior, not only fresh schema creation.
+
+### Documentation and validation
+
+Update migration publishing, README installation/upgrade instructions,
+decision 002, changelog and .ai/STATE.md.
+
+Document:
+- The final migration file structure.
+- How each historical installation upgrades.
+- Required deployment steps, including worker handling.
+- How interrupted upgrades resume.
+- Remaining limitations.
+
+Run composer check: Pest, Pint and Larastan level 8.
+Run the opt-in MariaDB tests if their existing dedicated configuration
+is available. Keep default tests offline and credentials out of output
+and tracked files.
+
+Do not change vendor code, publish a release or begin Task 06.
+
+Report the final migration structure, compatibility decisions,
+regression coverage, actual validation results and unexecuted checks.
+
+===
+
+## Task 05C clarification — Replace development migrations cleanly
+
+This instruction supersedes all previous requirements to preserve
+historical outbox migration names or support Task 05/05A/05B upgrades.
+
+The package has not been released. Backward compatibility with these
+development migration versions is explicitly out of scope.
+
+Simplify the implementation:
+
+1. Delete all outbox correction, reconciliation and compatibility-bridge
+   migration files, including empty historical migrations.
+
+2. Keep exactly one outbox create migration containing the complete,
+   final schema. It may create all required outbox tables in one file.
+   Its down() must drop those tables in reverse dependency order.
+
+3. Remove legacy-upgrade-only machinery:
+   - Schema-version detection and conditional repair branches.
+   - Migration progress/completion tracking.
+   - Legacy superseded-row conversion and legacy_recovery metadata.
+   - Configuration, publishing entries and documentation used solely
+     by these historical upgrades.
+
+   Preserve runtime delivery stages, remote-ID evidence, OAuth blockers,
+   leases and operator audits: these serve current runtime behavior.
+
+4. Do not use hasTable()/hasColumn() guards to accommodate old schemas.
+   Do not introduce replacement bridges, upgrade services or a migration
+   framework. Laravel's migration ledger handles normal execution.
+
+5. Update migration publishing to publish only the canonical outbox
+   migration. Preserve the separate contact-identity migration scope.
+
+6. Remove tests dedicated solely to historical outbox upgrade paths.
+   Update SQLite and opt-in MariaDB tests to use the final schema.
+   Retain all runtime correctness, fault-injection, operator recovery,
+   poller fairness and real multi-process concurrency tests.
+
+7. Rewrite README, decision 002, changelog and .ai/STATE.md to describe
+   the final implementation. Remove obsolete upgrade instructions.
+
+Existing disposable development installations must recreate their
+package test schema. Document that requirement, but do not automatically
+drop or reset any host database. Do not run migrate:fresh against a host
+application or a production database copy.
+
+Run composer check and the dedicated opt-in MariaDB tests when available.
+Report the deleted files, final migration structure and actual results.
+
+Do not add compatibility mechanisms for unreleased development versions.
+Do not publish a release or begin Task 06.

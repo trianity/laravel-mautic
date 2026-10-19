@@ -6,6 +6,7 @@ use Illuminate\Contracts\Queue\Queue as QueueContract;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Schema;
 use Trianity\LaravelMautic\Contracts\Clock;
 use Trianity\LaravelMautic\Contracts\ContactMappingRepository;
 use Trianity\LaravelMautic\Contracts\ContactSyncTransport;
@@ -20,6 +21,7 @@ use Trianity\LaravelMautic\Identity\ContactIdentityHasher;
 use Trianity\LaravelMautic\Identity\DatabaseContactMappingRepository;
 use Trianity\LaravelMautic\Identity\LocalContactReference;
 use Trianity\LaravelMautic\Jobs\ProcessContactOutboxJob;
+use Trianity\LaravelMautic\MauticServiceProvider;
 use Trianity\LaravelMautic\OAuth\OAuthTokenFailureKind;
 use Trianity\LaravelMautic\Outbox\ContactOutbox;
 use Trianity\LaravelMautic\Outbox\ContactSyncCommand;
@@ -91,6 +93,30 @@ beforeEach(function () {
         ->assertSuccessful();
     (require database_path('migrations/2026_10_19_010000_create_mautic_contact_mappings.php'))->up();
     (require database_path('migrations/2026_10_19_020000_create_mautic_contact_outbox.php'))->up();
+});
+
+it('publishes one final outbox migration with a reversible schema', function () {
+    $published = MauticServiceProvider::pathsToPublish(
+        MauticServiceProvider::class,
+        'mautic-outbox-migrations',
+    );
+    $schema = Schema::connection('outbox-test');
+
+    expect($published)->toHaveCount(1)
+        ->and(array_key_first($published))->toEndWith('create_mautic_contact_outbox.php.stub')
+        ->and($schema->hasTable('mautic_outbox_commands'))->toBeTrue()
+        ->and($schema->hasTable('mautic_outbox_locks'))->toBeTrue()
+        ->and($schema->hasTable('mautic_outbox_audits'))->toBeTrue()
+        ->and($schema->hasTable('mautic_outbox_connection_blocks'))->toBeTrue()
+        ->and($schema->hasColumn('mautic_outbox_commands', 'legacy_recovery'))->toBeFalse()
+        ->and($schema->hasTable('mautic_outbox_migration_state'))->toBeFalse();
+
+    (require database_path('migrations/2026_10_19_020000_create_mautic_contact_outbox.php'))->down();
+
+    expect($schema->hasTable('mautic_outbox_connection_blocks'))->toBeFalse()
+        ->and($schema->hasTable('mautic_outbox_audits'))->toBeFalse()
+        ->and($schema->hasTable('mautic_outbox_locks'))->toBeFalse()
+        ->and($schema->hasTable('mautic_outbox_commands'))->toBeFalse();
 });
 
 it('records in the host transaction and dispatches only after commit', function () {

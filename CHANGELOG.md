@@ -44,9 +44,10 @@
 - Preserve typed OAuth blockers and transient token-endpoint metadata, and honor valid
   `Retry-After` values as minimum delays rather than capping them to local backoff.
 - Avoid uninitialized or stale upstream SDK response headers after transport failures.
-- Add a published outbox correction migration for existing Task 05 installations.
-- Prevent blind replay of legacy superseded revisions, avoid bounded-poller starvation,
-  and retain locally returned create IDs when their first evidence write fails.
+- Avoid bounded-poller starvation and retain locally returned create IDs when their
+  first evidence write fails.
+- Replace unreleased incremental outbox migrations with one canonical final-schema
+  migration and no development-version compatibility machinery.
 
 - Enforce byte-exact contact identities with collation-independent tuple hashes,
   original-value verification and an explicit validating upgrade migration.

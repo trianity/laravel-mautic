@@ -310,14 +310,17 @@ package-owned classifications rather than upstream messages or credentials.
 SQLite and MariaDB behavior, crash boundaries and limitations are recorded in
 [docs/decisions/002-outbox-delivery.md](docs/decisions/002-outbox-delivery.md).
 
-Hosts that published an earlier development outbox migration must republish and run both
-the `2026_10_19_021000_correct_mautic_contact_outbox` and
-`2026_10_19_022000_reconcile_legacy_mautic_contact_outbox` migrations. Legacy
-`superseded` rows are retained as `ambiguous`, never blindly replayed, whether or not a
-newer revision completed. The forward migration also detects installations where the old
-05A migration already made an identifiable lower historical revision pending and moves
-it behind the same explicit reconciliation barrier. Completed commands remain completed.
-These corrections are intentionally irreversible.
+Fresh installations use the complete canonical
+`2026_10_19_020000_create_mautic_contact_outbox` schema, which creates the commands,
+aggregate locks, operator audits and OAuth connection-block tables. This is the only
+published outbox migration; Laravel's migration ledger handles its normal execution.
+
+The package has not been released, so schemas created by earlier Task 05 development
+migrations are not upgradeable. A disposable development installation that ran those
+stubs must recreate its package outbox schema before applying the canonical migration.
+The package never drops or resets a host database automatically. Do not run
+`migrate:fresh` against a host application database or a production database copy;
+perform any scoped recreation only in a confirmed disposable development environment.
 
 ## Normalized contact reads
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for Task 05 and corrected by Tasks 05A and 05B.
+Accepted for Task 05 and finalized by Tasks 05A, 05B and 05C.
 
 ## Transaction and dispatch boundary
 
@@ -32,13 +32,16 @@ before applying its bounded limit, so a blocked aggregate cannot starve unrelate
 The existing unique `(aggregate_hash, revision)` index supports this grouped head query;
 the status/due-time and connection/status indexes support its remaining filters.
 
-Legacy `superseded` rows retain their immutable payload and identity but migrate to
-`ambiguous`, regardless of whether a newer revision completed. Neither same-field nor
-disjoint partial payloads are inferred safe for replay. The forward migration also
-repairs installations that already ran the unsafe 05A conversion: because that version
-left no row marker, a pending lower revision with any higher stored revision is
-conservatively marked as legacy ambiguity. Completed rows are never reactivated. An
-operator must reconcile or explicitly authorize each historical replay.
+The published migration set contains only the complete canonical 020000 create
+migration. It creates the commands, aggregate locks, operator audits and OAuth
+connection-block tables and drops them in reverse order on rollback. It contains no
+schema-detection, correction or migration-progress machinery.
+
+The package is unreleased, so historical Task 05 development schemas have no upgrade
+contract. Disposable development installations that ran earlier stubs must recreate the
+package outbox schema before applying the canonical migration. The package does not
+automatically drop or reset any host database, and `migrate:fresh` must not be run
+against a host application database or production database copy.
 
 The lease must exceed the host-declared complete-operation budget, which must cover each
 individual request timeout. This sizing reduces expected expiry but is not remote
@@ -96,6 +99,6 @@ SQLite tests prove transactional recording, dispatch-gap recovery and lease stat
 transitions. Separate PHP processes share one file-backed SQLite database for both the
 duplicate-worker test and the controlled in-flight lease-expiry test; these are not
 memory fakes. SQLite still serializes writes and does not reproduce InnoDB row-lock
-scheduling. The opt-in disposable MariaDB suite verifies fresh and upgrade migrations,
-including the 05B forward migration. Production hosts must run workers against a shared
-durable database; an in-memory repository or process-local mutex is insufficient.
+scheduling. The opt-in disposable MariaDB suite verifies the final schema and shared
+lease behavior on InnoDB. Production hosts must run workers against a shared durable
+database; an in-memory repository or process-local mutex is insufficient.
