@@ -302,7 +302,7 @@ it('defers concurrent work while another process owns the contact lease', functi
     expect($store->status($eventId))->toBe(WebhookEventStatus::Processed);
 });
 
-it('updates mapping state for allowed deletes without exposing an automatic route', function () {
+it('updates mapping state for allowed deletes', function () {
     $body = json_encode(['mautic.lead_post_delete' => [[
         'lead' => ['id' => 100],
         'timestamp' => '2026-10-19T15:00:00+00:00',
@@ -315,6 +315,5 @@ it('updates mapping state for allowed deletes without exposing an automatic rout
     $mapping = app(ContactMappingRepository::class)
         ->findByRemoteId('main', 100);
 
-    expect($mapping?->remoteState)->toBe(RemoteContactState::Deleted)
-        ->and(app('router')->getRoutes()->count())->toBe(0);
+    expect($mapping?->remoteState)->toBe(RemoteContactState::Deleted);
 });

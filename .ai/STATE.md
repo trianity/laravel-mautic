@@ -85,6 +85,25 @@ shared contact lease with 1 test / 9 assertions. This proves the lock contract a
 real shared store, but is not a separate-process inbox stress test. No live Mautic endpoint
 was called, and remote CI was not rerun because no authorized push occurred.
 
+## Webhook route test correction — 2026-10-19
+
+Task 06A corrects a cross-version test assumption without changing runtime behavior.
+Laravel 12/Testbench 10 provides two framework routes in this package test application,
+so asserting that the entire application had zero routes failed even though
+`MauticServiceProvider` registered none. The delete-event test now checks only its mapping
+state responsibility. A separate isolated Testbench test starts without package providers,
+registers a representative named host route, snapshots its methods, URI, name, action and
+middleware, then registers and boots `MauticServiceProvider` and requires the complete
+route definitions to remain identical. An automatic package webhook route would therefore
+fail the test.
+
+Focused webhook and provider tests passed with 10 tests / 58 assertions. Local
+`composer check` passed Composer validation, Pint, Larastan level 8 and 161 tests / 691
+assertions, with three opt-in MariaDB tests skipped by the default environment. These
+checks ran on PHP 8.5.11, Laravel 13.37.0, Testbench 11.3.0 and Pest 5.3.3. The unchanged
+PHP 8.4/8.5 and Laravel 12/13 remote CI matrix has not been rerun because no authorized
+push occurred; all four matrix combinations therefore await remote verification.
+
 ## Durable outgoing synchronization — 2026-10-19
 
 Implemented an optional transactional contact outbox for explicit allowlisted create

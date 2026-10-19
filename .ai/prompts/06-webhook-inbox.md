@@ -30,3 +30,68 @@ Acceptance criteria:
 
 No automatically exposed route unless explicitly enabled/configured by the host.
 Document CSRF exemption and host routing requirements narrowly for this endpoint.
+
+===
+
+## Task 06A — Correct the cross-version route registration test
+
+Fix the CI failure introduced by Task 06.
+
+Both Laravel 12 jobs fail at tests/Feature/WebhookInboxTest.php:319:
+
+    ->and(app('router')->getRoutes()->count())->toBe(0);
+
+The actual route count is 2. Both Laravel 13 jobs and the Pint/Larastan
+job pass.
+
+The package must not automatically register webhook routes. This does
+not require the entire Laravel/Testbench application to have zero routes.
+
+### Required correction
+
+1. Remove the global zero-route assertion from the delete-event test.
+   Keep its assertion that the mapping becomes RemoteContactState::Deleted.
+   Rename the test to describe its remaining responsibility.
+
+2. Add a dedicated provider test proving that registering and booting
+   MauticServiceProvider does not add or modify application routes.
+
+   Use an isolated Testbench setup where this provider has not already
+   been registered automatically. Register a representative host route,
+   capture the route definitions, register and boot the package provider,
+   and compare the resulting route definitions with the baseline.
+
+   Compare meaningful route attributes, including methods, URI, name,
+   action and middleware, rather than only route counts.
+
+   Ensure the test would fail if the package provider started registering
+   an automatic webhook endpoint.
+
+3. Do not:
+   - Replace the expected count with 2.
+   - Add Laravel-version-specific expected counts or conditionals.
+   - Remove framework routes to satisfy the assertion.
+   - Skip the test on Laravel 12.
+   - Change runtime webhook behavior or weaken the no-automatic-route
+     requirement.
+
+### Validation
+
+Run the focused tests and composer check.
+
+Verify compatibility with the existing CI matrix:
+- PHP 8.4 / Laravel 12 / Testbench 10 / Pest 4.
+- PHP 8.5 / Laravel 12 / Testbench 10 / Pest 4.
+- PHP 8.4 / Laravel 13 / Testbench 11 / Pest 5.
+- PHP 8.5 / Laravel 13 / Testbench 11 / Pest 5.
+
+Keep the existing workflow matrix unchanged unless an independently
+verified configuration defect requires correction.
+
+Do not modify vendor, commit composer.lock, or add compatibility
+infrastructure for this test correction.
+
+Update .ai/STATE.md with the cause, correction and actual validation
+results. Distinguish executed checks from checks awaiting remote CI.
+
+Do not publish a release or begin Task 07.
