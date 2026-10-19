@@ -7,7 +7,6 @@ use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Response;
-use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Mautic\Auth\BasicAuth;
@@ -20,6 +19,7 @@ use Trianity\LaravelMautic\Identity\DatabaseContactMappingRepository;
 use Trianity\LaravelMautic\Identity\LocalContactReference;
 use Trianity\LaravelMautic\Identity\RemoteContactState;
 use Trianity\LaravelMautic\MauticConnection;
+use Trianity\LaravelMautic\MauticServiceProvider;
 
 beforeEach(function () {
     config()->set('database.default', 'identity-test');
@@ -108,66 +108,10 @@ it('binds replaceable Laravel persistence and publishes its migration explicitly
 
     expect(is_file(database_path('migrations/2026_10_19_010000_create_mautic_contact_mappings.php')))
         ->toBeTrue()
-        ->and(is_file(database_path('migrations/2026_10_19_011000_add_identity_hashes_to_mautic_contact_mappings.php')))
-        ->toBeTrue();
-
-    $upgrade = require database_path('migrations/2026_10_19_011000_add_identity_hashes_to_mautic_contact_mappings.php');
-    $upgrade->up();
-});
-
-it('upgrades the published legacy schema without changing opaque identity values', function () {
-    Schema::connection('identity-test')->drop('mautic_contact_mappings');
-    Schema::connection('identity-test')->create('mautic_contact_mappings', function (Blueprint $table): void {
-        $table->id();
-        $table->string('connection', 191);
-        $table->string('local_scope', 191);
-        $table->string('local_key', 191);
-        $table->unsignedBigInteger('remote_id');
-        $table->string('remote_state', 16);
-        $table->unsignedBigInteger('merged_into_remote_id')->nullable();
-        $table->unsignedBigInteger('generation');
-        $table->timestamps();
-        $table->unique(['connection', 'local_scope', 'local_key'], 'mautic_mapping_local_unique');
-        $table->unique(['connection', 'remote_id'], 'mautic_mapping_remote_unique');
-    });
-    $now = date('Y-m-d H:i:s');
-    DB::connection('identity-test')->table('mautic_contact_mappings')->insert([
-        ['connection' => 'Main', 'local_scope' => 'tenant:Café', 'local_key' => ' key ', 'remote_id' => 42, 'remote_state' => 'active', 'merged_into_remote_id' => null, 'generation' => 1, 'created_at' => $now, 'updated_at' => $now],
-        ['connection' => 'main', 'local_scope' => 'tenant:cafe', 'local_key' => 'key', 'remote_id' => 42, 'remote_state' => 'active', 'merged_into_remote_id' => null, 'generation' => 1, 'created_at' => $now, 'updated_at' => $now],
-    ]);
-
-    $migration = require database_path('migrations/2026_10_19_011000_add_identity_hashes_to_mautic_contact_mappings.php');
-    $migration->up();
-    $repository = new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'identity-test');
-
-    expect($repository->find('Main', new LocalContactReference('tenant:Café', ' key '))?->remoteId)->toBe(42)
-        ->and($repository->find('main', new LocalContactReference('tenant:cafe', 'key'))?->remoteId)->toBe(42)
-        ->and(Schema::connection('identity-test')->hasColumns('mautic_contact_mappings', [
-            'local_identity_hash',
-            'remote_identity_hash',
-        ]))->toBeTrue();
-});
-
-it('stops an identity upgrade when existing rows are incompatible', function () {
-    Schema::connection('identity-test')->drop('mautic_contact_mappings');
-    Schema::connection('identity-test')->create('mautic_contact_mappings', function (Blueprint $table): void {
-        $table->id();
-        $table->string('connection', 191);
-        $table->string('local_scope', 191);
-        $table->string('local_key', 191);
-        $table->unsignedBigInteger('remote_id');
-        $table->string('remote_state', 16);
-        $table->unsignedBigInteger('merged_into_remote_id')->nullable();
-        $table->unsignedBigInteger('generation');
-        $table->timestamps();
-    });
-    $row = ['connection' => 'main', 'local_scope' => 'tenant:acme', 'local_key' => 'same', 'remote_id' => 42, 'remote_state' => 'active', 'merged_into_remote_id' => null, 'generation' => 1, 'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s')];
-    DB::connection('identity-test')->table('mautic_contact_mappings')->insert([$row, $row]);
-    $migration = require database_path('migrations/2026_10_19_011000_add_identity_hashes_to_mautic_contact_mappings.php');
-
-    expect(fn () => $migration->up())->toThrow(IncompatibleContactMappingData::class)
-        ->and(Schema::connection('identity-test')->hasColumn('mautic_contact_mappings', 'local_identity_hash'))
-        ->toBeFalse();
+        ->and(MauticServiceProvider::pathsToPublish(
+            MauticServiceProvider::class,
+            'mautic-identity-migrations',
+        ))->toHaveCount(1);
 });
 
 it('rejects crossed identity claims and supports explicit versioned recovery', function () {

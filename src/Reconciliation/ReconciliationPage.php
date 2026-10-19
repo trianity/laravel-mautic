@@ -9,5 +9,8 @@ use Trianity\LaravelMautic\Data\Contact;
 final readonly class ReconciliationPage
 {
     /** @param list<Contact> $contacts */
-    public function __construct(public array $contacts) {}
+    public function __construct(
+        public array $contacts,
+        public int $remainingCount,
+    ) {}
 }

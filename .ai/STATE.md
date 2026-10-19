@@ -23,7 +23,8 @@
   encrypted durable events, asynchronous recovery, shared contact leases and explicit
   host-owned inbound projection through mapping and field-ownership policies.
 - Bounded per-connection reconciliation with durable checkpoints, scan watermarks,
-  keyset pagination, replay-safe observations/findings and explicit mapping recovery.
+  keyset pagination, shared request reservations, replay-safe observations/findings and
+  explicit mapping recovery.
 - Privacy-safe connection diagnostics and separately configured, opt-in live-server
   acceptance suites that are excluded from the default test command.
 - Pest unit/feature tests, Testbench, Pint, Larastan level 8, CI matrix.
@@ -58,9 +59,10 @@ failed remote listing as deletion evidence. Each byte-exact connection has a dur
 checkpoint with a captured remote-ID high-water mark. Pages use ascending keyset
 pagination inside that fixed range; observations and findings are written atomically with
 the compare-and-set cursor. Replaying a page is deduplicated by scan and remote contact.
-The watermark request, successful pages and failed attempts all durably advance a
-configurable next-request time, while page/run limits additionally bound scheduled work.
-Restarting creates a new scan without changing mappings by itself.
+Every watermark/page request first acquires a durable owner/generation reservation and
+persists accounting plus the next-request time. Page/run limits and server-directed delay
+additionally bound scheduled work. Restarting creates a new scan without changing
+mappings by itself.
 
 Reconciliation records only remote IDs, mapping references, state classifications and
 sanitized failures. It reports unmapped remote contacts and non-active mappings, while
@@ -86,13 +88,13 @@ harness. It requires exact opt-in, a loopback disposable target, an acknowledged
 environment, a dedicated `lm-live-*` fixture prefix and the expected installed Mautic version.
 Its cases cover Basic Auth, contact create/PATCH/read, DNC, manual segments, optional
 dynamic-segment convergence, optional webhook capture/signature evidence, and separately
-opted-in OAuth refresh. Cleanup targets only contacts created by that run; rotated OAuth
-credentials are written only to an explicitly configured mode-0600 output file.
+opted-in OAuth refresh. Cleanup targets only contacts created by that run. Before refresh,
+the harness exclusively creates the rotated-token output and verifies mode 0600.
 
 Focused SQLite reconciliation tests passed with 7 tests / 106 assertions. The dedicated
 opt-in MariaDB reconciliation test passed against the supplied disposable shared database
-with 1 test / 10 assertions, exercising the canonical schema and database-backed recovery
-transaction. Invoking the isolated live suite without its opt-in variables produced
+with 1 test / 10 assertions, exercising the canonical schema and recovery transaction.
+Invoking the isolated live suite without its opt-in variables produced
 4 skipped tests / 0 assertions and made no network request; this verifies gating only.
 No live HTTP acceptance test was authorized or executed, so no Mautic server version is
 yet compatibility-verified. The adjacent local installation metadata reports Mautic core
@@ -100,6 +102,56 @@ yet compatibility-verified. The adjacent local installation metadata reports Mau
 been rerun for these uncommitted changes. Local `composer check` passed strict Composer
 validation, Pint, Larastan level 8 and 168 tests / 797 assertions, with the four opt-in
 MariaDB tests skipped by the default environment.
+
+## Reconciliation correctness correction — 2026-10-19
+
+Task 07A replaces post-request scheduling with an atomic shared-database reservation
+before every watermark or page HTTP call. The reservation has a random owner, monotonically
+increasing checkpoint generation, expiry and precommitted request accounting. Result
+updates require the same scan, generation and owner. Expired work is recoverable without
+holding a transaction across HTTP; delayed success, delayed failure and pre-restart
+results cannot overwrite the newer checkpoint. The reservation lifetime is validated as
+longer than every configured Mautic request timeout.
+
+Current-response numeric `Retry-After` now crosses the SDK boundary for both watermark
+and page failures and extends the durable schedule without a local cap. Malformed or stale
+headers are ignored. Transient OAuth token failures preserve applicable delay, while token
+persistence uncertainty, reauthorization and non-transient token failures durably block
+the scan instead of becoming ordinary retries.
+
+SDK reconciliation pages retain the filtered range total. Positive totals with empty
+results, totals smaller than returned rows, invalid bounds/order, duplicates and
+no-progress responses fail without moving the committed cursor. A short page remains
+running when its total reports more rows; only consistent exhaustion completes it.
+
+Mapping inventory now filters on the canonical byte-exact connection hash before
+remote-ID ordering, one-row look-ahead and limiting. SQLite and the disposable
+case-insensitive MariaDB test both distinguish `main` from `Main` with overlapping remote
+IDs and audit exactly the intended application. The unreleased identity schema is one
+canonical create migration; the prior development upgrade bridge was removed. Existing
+disposable development schemas must be recreated manually, never through an automatic
+host database reset.
+
+The live OAuth harness exclusively creates, restricts and verifies its output file before
+refresh. It persists complete rotated token JSON only when the exact byte count and
+flush/fsync succeed; post-rotation failure raises the secret-free uncertain-persistence
+exception. This reduces avoidable loss but cannot close the crash window between remote
+rotation and durable local persistence. The live webhook harness now verifies the raw
+signature and structurally matches the exact update event, fixture ID/email and changed
+field while ignoring partial trailing JSONL records.
+
+Controlled integration tests use separate PHP processes over one shared SQLite file. They
+prove that simultaneous first invocations send one eligible request, an abandoned
+reservation is recovered, request count/spacing remain durable, and the old worker's late
+success and failure are rejected. This is real multi-process shared-storage evidence, not
+an in-memory fake. The focused correction suite passed 39 tests / 332 assertions.
+
+Local `composer check` passed strict Composer validation, Pint, Larastan level 8 and
+189 tests / 918 assertions; four opt-in MariaDB tests were skipped by the default
+environment. The configured disposable case-insensitive MariaDB identity and
+reconciliation suites passed together with 2 tests / 22 assertions. The isolated live
+suite remained gated with 4 skipped tests / 0 assertions and made no HTTP request. No
+live Mautic compatibility run or remote PHP/Laravel CI matrix was executed.
 
 ## Verified webhook inbox and inbound sync — 2026-10-19
 
@@ -267,11 +319,9 @@ SHA-256 hashes of length-prefixed tuple components; repository lookups verify th
 original tuple after every hash match. Claims, reverse lookup, generation transitions
 and explicit relinking use the same keys.
 
-The separately published follow-up migration validates the earlier development table,
-rejects invalid or duplicate exact identities, backfills hashes without rewriting
-original values and replaces the collation-dependent indexes. It stops with an
-actionable exception on incompatible data and is deliberately irreversible. Feature
-tests execute the actual published fresh and upgrade migrations.
+The canonical create migration contains the complete final hashes and inventory index.
+The earlier development upgrade migration was removed by Task 07A because the package is
+unreleased; disposable development installations recreate the package schema explicitly.
 
 Exact-email discovery and writer duplicate preflight now share trim plus ASCII
 case-folding for both structured query values and local response comparison. Structured
@@ -281,7 +331,7 @@ duplicates use the same policy. Mapping remains an explicit host decision.
 
 Focused correction tests cover case, accent and whitespace distinctions, connection
 and scope isolation, round-tripping, exact-repeat idempotency, both claim conflicts,
-stale state and relink conflicts, safe legacy upgrade rejection, normalized queries,
+stale state and relink conflicts, canonical-schema publication, normalized queries,
 special characters, pagination and distinct remote IDs. The real-process SQLite test
 still races two PHP processes over one shared file database; it is not a memory fake.
 The disposable case-insensitive MariaDB suite is opt-in through

@@ -3,9 +3,11 @@
 declare(strict_types=1);
 
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
+use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -16,6 +18,9 @@ use Trianity\LaravelMautic\Contracts\ContactReaderProvider;
 use Trianity\LaravelMautic\Contracts\ReconciliationSource;
 use Trianity\LaravelMautic\Data\Contact;
 use Trianity\LaravelMautic\Exceptions\MauticReadException;
+use Trianity\LaravelMautic\Exceptions\OAuthReauthorizationRequired;
+use Trianity\LaravelMautic\Exceptions\OAuthTokenPersistenceUncertain;
+use Trianity\LaravelMautic\Exceptions\OAuthTokenRequestFailed;
 use Trianity\LaravelMautic\Fakes\FakeContactReader;
 use Trianity\LaravelMautic\Identity\ContactIdentityHasher;
 use Trianity\LaravelMautic\Identity\DatabaseContactMappingRepository;
@@ -23,6 +28,7 @@ use Trianity\LaravelMautic\Identity\LocalContactReference;
 use Trianity\LaravelMautic\Identity\RemoteContactState;
 use Trianity\LaravelMautic\MauticConnection;
 use Trianity\LaravelMautic\MauticServiceProvider;
+use Trianity\LaravelMautic\OAuth\OAuthTokenFailureKind;
 use Trianity\LaravelMautic\Read\ReadFailureKind;
 use Trianity\LaravelMautic\Read\ReadOperation;
 use Trianity\LaravelMautic\Reconciliation\ContactReconciler;
@@ -52,9 +58,18 @@ final class TestReconciliationSource implements ReconciliationSource
 
     public bool $failPage = false;
 
+    public ?Throwable $highWaterFailure = null;
+
+    public ?Throwable $pageFailure = null;
+
+    public ?ReconciliationPage $pageResult = null;
+
     public function highWatermark(string $connection): int
     {
         $this->requests++;
+        if ($this->highWaterFailure !== null) {
+            throw $this->highWaterFailure;
+        }
 
         return $this->remoteIds === [] ? 0 : max($this->remoteIds);
     }
@@ -62,8 +77,14 @@ final class TestReconciliationSource implements ReconciliationSource
     public function page(string $connection, int $fromRemoteId, int $throughRemoteId, int $limit): ReconciliationPage
     {
         $this->requests++;
+        if ($this->pageFailure !== null) {
+            throw $this->pageFailure;
+        }
         if ($this->failPage) {
             throw new MauticReadException(ReadFailureKind::RemoteServer, ReadOperation::SearchContacts, $connection, 503);
+        }
+        if ($this->pageResult !== null) {
+            return $this->pageResult;
         }
         $ids = array_values(array_filter(
             $this->remoteIds,
@@ -74,7 +95,7 @@ final class TestReconciliationSource implements ReconciliationSource
         return new ReconciliationPage(array_map(
             static fn (int $id): Contact => new Contact($id),
             array_slice($ids, 0, $limit),
-        ));
+        ), count($ids));
     }
 }
 
@@ -210,6 +231,98 @@ it('retains a failed page checkpoint and never infers deletion from an incomplet
         ->and($resumed->observedCount)->toBe(2);
 });
 
+it('honors server retry delays for watermark page and transient OAuth throttling', function () {
+    $throttled = new MauticReadException(
+        ReadFailureKind::Throttled,
+        ReadOperation::SearchContacts,
+        'main',
+        429,
+        3_600,
+    );
+    $this->source->highWaterFailure = $throttled;
+    $watermark = app(ContactReconciler::class)->run('main');
+    expect($watermark->status)->toBe(ReconciliationStatus::Failed)
+        ->and($watermark->nextPageAt)->toBe(1_800_003_600)
+        ->and($watermark->requestCount)->toBe(1);
+    $this->clock->timestamp += 3_600;
+    $this->source->highWaterFailure = null;
+    $this->source->remoteIds = [10];
+    $watermark = app(ContactReconciler::class)->run('main');
+    expect($watermark->requestCount)->toBe(2);
+
+    $this->clock->timestamp += 10;
+    $this->source->pageFailure = $throttled;
+    $page = app(ContactReconciler::class)->run('main');
+    expect($page->status)->toBe(ReconciliationStatus::Failed)
+        ->and($page->nextPageAt)->toBe(1_800_007_210)
+        ->and($page->requestCount)->toBe(3);
+
+    $this->source->pageFailure = new OAuthTokenRequestFailed(
+        'main',
+        OAuthTokenFailureKind::Throttled,
+        429,
+        7_200,
+    );
+    $this->clock->timestamp = 1_800_007_210;
+    $oauth = app(ContactReconciler::class)->run('main');
+    expect($oauth->status)->toBe(ReconciliationStatus::Failed)
+        ->and($oauth->nextPageAt)->toBe(1_800_014_410)
+        ->and($oauth->requestCount)->toBe(4);
+});
+
+it('blocks reconciliation for OAuth outcomes that require operator resolution', function (Throwable $failure, string $kind) {
+    $this->source->highWaterFailure = $failure;
+
+    $blocked = app(ContactReconciler::class)->run('main');
+    expect($blocked->status)->toBe(ReconciliationStatus::Blocked)
+        ->and($blocked->lastFailureKind)->toBe($kind)
+        ->and($blocked->nextPageAt)->toBeNull()
+        ->and(app(ContactReconciler::class)->run('main'))->toEqual($blocked)
+        ->and($this->source->requests)->toBe(1);
+})->with([
+    'uncertain persistence' => [new OAuthTokenPersistenceUncertain('main'), 'oauth_token_persistence_uncertain'],
+    'reauthorization' => [new OAuthReauthorizationRequired('main'), 'oauth_reauthorization_required'],
+]);
+
+it('does not complete a short page while the response reports remaining contacts', function () {
+    $this->source->remoteIds = [10, 20, 30];
+    $reconciler = app(ContactReconciler::class);
+    $reconciler->run('main');
+    $this->clock->timestamp += 10;
+    $this->source->pageResult = new ReconciliationPage([new Contact(10)], 3);
+
+    $checkpoint = $reconciler->run('main');
+    expect($checkpoint->status)->toBe(ReconciliationStatus::Running)
+        ->and($checkpoint->cursorRemoteId)->toBe(10)
+        ->and($checkpoint->observedCount)->toBe(1);
+});
+
+it('retains the committed cursor when a page cannot prove forward progress', function () {
+    $this->source->remoteIds = [10];
+    $reconciler = app(ContactReconciler::class);
+    $reconciler->run('main');
+    $this->clock->timestamp += 10;
+    $this->source->pageResult = new ReconciliationPage([], 1);
+
+    $checkpoint = $reconciler->run('main');
+    expect($checkpoint->status)->toBe(ReconciliationStatus::Failed)
+        ->and($checkpoint->lastFailureKind)->toBe(ReadFailureKind::UnexpectedResponse->value)
+        ->and($checkpoint->cursorRemoteId)->toBe(0)
+        ->and($checkpoint->observedCount)->toBe(0);
+});
+
+it('rejects a reserved result after an explicit scan restart', function () {
+    $store = app(DatabaseReconciliationStore::class);
+    $old = $store->reserve($store->begin('main', 10), 10, 30)
+        ?? throw new RuntimeException('The initial request was not reserved.');
+    $replacement = $store->begin('main', 10, true);
+
+    expect($replacement->scanId)->not->toBe($old->scanId)
+        ->and($replacement->generation)->toBeGreaterThan($old->generation)
+        ->and(fn () => $store->setHighWatermark($old, 10))->toThrow(RuntimeException::class)
+        ->and($store->get('main')?->scanId)->toBe($replacement->scanId);
+});
+
 it('dry-runs bounded missing mapping recovery and audits explicit application atomically', function () {
     $present = $this->mappings->claim('main', new LocalContactReference('tenant:test', 'present'), 10);
     $missing = $this->mappings->claim('main', new LocalContactReference('tenant:test', 'missing'), 20);
@@ -238,6 +351,36 @@ it('dry-runs bounded missing mapping recovery and audits explicit application at
             'actor' => 'operator-1',
             'reason_code' => 'confirmed_404',
         ]);
+});
+
+it('selects byte-exact mapping connections before applying limits', function () {
+    $this->mappings->claim('main', new LocalContactReference('tenant:test', 'lower'), 20);
+    $upperFirst = $this->mappings->claim('Main', new LocalContactReference('tenant:test', 'upper-20'), 20);
+    $this->mappings->claim('Main', new LocalContactReference('tenant:test', 'upper-30'), 30);
+    app()->instance(ContactReaderProvider::class, new TestContactReaderProvider(FakeContactReader::make()));
+    $recovery = app(MappingRecoveryService::class);
+
+    $dryRun = $recovery->run('Main', limit: 1);
+    expect($dryRun->checked)->toBe(1)
+        ->and($dryRun->missingRemoteIds)->toBe([20])
+        ->and($dryRun->nextRemoteId)->toBe(20)
+        ->and($dryRun->complete)->toBeFalse();
+
+    $applied = $recovery->run(
+        'Main',
+        limit: 1,
+        applyMissing: true,
+        actor: 'operator-1',
+        reasonCode: 'confirmed_404',
+    );
+    expect($applied->applied)->toBe(1)
+        ->and($this->mappings->find('Main', $upperFirst->localReference)?->remoteState)->toBe(RemoteContactState::Missing)
+        ->and($this->mappings->findByRemoteId('main', 20)?->remoteState)->toBe(RemoteContactState::Active)
+        ->and(DB::connection('reconciliation-test')->table('mautic_reconciliation_audits')->count())->toBe(1);
+
+    $next = $recovery->run('Main', afterRemoteId: 20, limit: 1);
+    expect($next->missingRemoteIds)->toBe([30])
+        ->and($next->complete)->toBeTrue();
 });
 
 it('reports only bounded operational diagnostics and token health', function () {
@@ -346,6 +489,74 @@ it('uses the real SDK boundary with an ID watermark and keyset ordering', functi
         ],
         'order' => [['col' => 'id', 'dir' => 'asc']],
     ]);
+});
+
+it('rejects contradictory watermark totals and stale response metadata after transport loss', function () {
+    $contradictory = new BasicAuth(new Client(['handler' => HandlerStack::create(new MockHandler([
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":1,"contacts":[]}'),
+    ]))]));
+    $contradictory->setup('integration', 'secret');
+    $source = (new MauticConnection('main', 'https://mautic.example.test/api/', $contradictory))->reconciliationReads();
+    expect(fn () => $source->highWatermark())->toThrow(fn (MauticReadException $exception) => $exception->kind === ReadFailureKind::UnexpectedResponse);
+
+    $auth = new BasicAuth(new Client(['handler' => HandlerStack::create(new MockHandler([
+        new Response(200, ['Content-Type' => 'application/json', 'Retry-After' => '999'], '{"total":1,"contacts":[{"id":10}]}'),
+        new ConnectException('Connection failed', new Request('GET', 'https://mautic.example.test/api/contacts')),
+    ]))]));
+    $auth->setup('integration', 'secret');
+    $source = (new MauticConnection('main', 'https://mautic.example.test/api/', $auth))->reconciliationReads();
+    expect($source->highWatermark())->toBe(10)
+        ->and(fn () => $source->page(0, 10, 10))->toThrow(fn (MauticReadException $exception) => $exception->kind === ReadFailureKind::Transport
+            && $exception->retryAfterSeconds === null);
+});
+
+it('preserves current numeric Retry-After metadata for reconciliation requests', function (string $request, string $header, ?int $expected) {
+    $responses = [];
+    if ($request === 'page') {
+        $responses[] = new Response(200, ['Content-Type' => 'application/json'], '{"total":1,"contacts":[{"id":10}]}');
+    }
+    $responses[] = new Response(
+        429,
+        ['Content-Type' => 'application/json', 'Retry-After' => $header],
+        '{"errors":[{"code":429,"message":"slow down"}]}',
+    );
+    $auth = new BasicAuth(new Client(['handler' => HandlerStack::create(new MockHandler($responses))]));
+    $auth->setup('integration', 'secret');
+    $source = (new MauticConnection('main', 'https://mautic.example.test/api/', $auth))->reconciliationReads();
+    if ($request === 'page') {
+        expect($source->highWatermark())->toBe(10);
+    }
+
+    $requestCall = $request === 'watermark'
+        ? fn (): int => $source->highWatermark()
+        : fn (): ReconciliationPage => $source->page(0, 10, 10);
+    expect($requestCall)->toThrow(fn (MauticReadException $exception) => $exception->kind === ReadFailureKind::Throttled
+        && $exception->retryAfterSeconds === $expected);
+})->with([
+    'watermark numeric' => ['watermark', '3600', 3_600],
+    'page numeric' => ['page', '3600', 3_600],
+    'watermark malformed' => ['watermark', 'later', null],
+    'page malformed' => ['page', 'later', null],
+]);
+
+it('preserves SDK range totals for short final and empty reconciliation pages', function () {
+    $auth = new BasicAuth(new Client(['handler' => HandlerStack::create(new MockHandler([
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":3,"contacts":[{"id":10}]}'),
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":1,"contacts":[{"id":30}]}'),
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":0,"contacts":[]}'),
+    ]))]));
+    $auth->setup('integration', 'secret');
+    $source = (new MauticConnection('main', 'https://mautic.example.test/api/', $auth))->reconciliationReads();
+
+    $short = $source->page(0, 40, 2);
+    $final = $source->page(20, 40, 2);
+    $empty = $source->page(40, 40, 2);
+    expect($short->remainingCount)->toBe(3)
+        ->and(array_column($short->contacts, 'remoteId'))->toBe([10])
+        ->and($final->remainingCount)->toBe(1)
+        ->and(array_column($final->contacts, 'remoteId'))->toBe([30])
+        ->and($empty->remainingCount)->toBe(0)
+        ->and($empty->contacts)->toBe([]);
 });
 
 it('registers read-only diagnostics and dry-run-first bounded recovery commands', function () {

@@ -41,7 +41,7 @@ final readonly class SdkContactWriter implements ContactWriter
             $rawResponse,
             $operation,
             $this->connection,
-            retryAfterSeconds: $this->retryAfterForResponse($rawResponse, $this->contacts),
+            retryAfterSeconds: SdkResponseMetadata::retryAfterForResponse($rawResponse, $this->contacts),
         );
 
         if (! array_key_exists('contact', $response)) {
@@ -60,7 +60,7 @@ final readonly class SdkContactWriter implements ContactWriter
             $rawResponse,
             $operation,
             $this->connection,
-            retryAfterSeconds: $this->retryAfterForResponse($rawResponse, $this->contacts),
+            retryAfterSeconds: SdkResponseMetadata::retryAfterForResponse($rawResponse, $this->contacts),
         );
 
         if (! array_key_exists('contact', $response)) {
@@ -145,7 +145,7 @@ final readonly class SdkContactWriter implements ContactWriter
                 $rawResponse,
                 ReadOperation::SearchContacts,
                 $this->connection,
-                $this->retryAfterForResponse($rawResponse, $this->contacts),
+                SdkResponseMetadata::retryAfterForResponse($rawResponse, $this->contacts),
             );
 
             if (! is_int($response['total'] ?? null) || ! is_array($response['contacts'] ?? null)) {
@@ -217,7 +217,7 @@ final readonly class SdkContactWriter implements ContactWriter
             $response,
             $operation,
             $this->connection,
-            retryAfterSeconds: $this->retryAfterForResponse($response, $this->segments),
+            retryAfterSeconds: SdkResponseMetadata::retryAfterForResponse($response, $this->segments),
         );
     }
 
@@ -293,38 +293,5 @@ final readonly class SdkContactWriter implements ContactWriter
         if ($remoteId < 1) {
             throw new InvalidWriteRequest('Remote IDs must be positive integers.');
         }
-    }
-
-    /** @param array<mixed> $headers */
-    private function retryAfterSeconds(array $headers): ?int
-    {
-        foreach ($headers as $name => $value) {
-            if (! is_string($name) || strtolower($name) !== 'retry-after') {
-                continue;
-            }
-            if (is_array($value)) {
-                $value = reset($value);
-            }
-
-            return is_string($value) && ctype_digit($value) ? (int) $value : null;
-        }
-
-        return null;
-    }
-
-    /** @param array<mixed> $response */
-    private function retryAfterForResponse(array $response, Contacts|Segments $api): ?int
-    {
-        $errors = $response['errors'] ?? null;
-        if (! is_array($errors) || $errors === []) {
-            return null;
-        }
-        $first = reset($errors);
-        $status = is_array($first) ? $this->boundary->statusCode($first['code'] ?? null) : null;
-        if ($status === null || $status < 100 || $status > 599) {
-            return null;
-        }
-
-        return $this->retryAfterSeconds($api->getResponseHeaders());
     }
 }

@@ -15,6 +15,7 @@ it('allows only one crossed mapping claim across real processes sharing SQLite',
     $capsule->schema()->create('mautic_contact_mappings', function (Blueprint $table): void {
         $table->id();
         $table->string('connection', 191);
+        $table->char('connection_hash', 64);
         $table->string('local_scope', 191);
         $table->string('local_key', 191);
         $table->char('local_identity_hash', 64);

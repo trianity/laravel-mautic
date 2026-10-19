@@ -57,3 +57,13 @@ Schedule bounded `mautic:reconcile` invocations and inspect `mautic:diagnose`. R
 `mautic:reconcile-mappings` without `--apply-missing` first. Apply a confirmed missing
 mapping only with an operator identity and reason code. Review pending/ambiguous outbox
 work, failed inbox work and OAuth health before and after each migration stage.
+
+Set the reconciliation request reservation longer than every Mautic request timeout and
+run schedulers frequently enough to resume expired reservations. Treat a blocked OAuth
+scan as an operator condition, not as an ordinary retry. Honor server-directed retry
+delays, and never infer absence from a failed, contradictory or incomplete page.
+
+Because the package is unreleased, disposable installations that ran earlier identity or
+reconciliation stubs must recreate those package test schemas before using the canonical
+migrations. Do not automatically reset a host database and never run `migrate:fresh`
+against a host application or production database copy.

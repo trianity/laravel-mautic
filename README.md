@@ -183,12 +183,12 @@ changing it does not change an established mapping.
 Connection names, scopes and keys are byte-exact opaque values: case, accents and
 leading/trailing whitespace are significant and stored unchanged. SHA-256 tuple hashes
 provide database-independent lookup and uniqueness, while every match is verified
-against the original values. Hosts that ran the earlier development mapping migration
-must republish `mautic-identity-migrations` and run the explicit
-`2026_10_19_011000_add_identity_hashes_to_mautic_contact_mappings` upgrade. It validates
-and backfills without rewriting identities, and stops on incompatible data rather than
-merging mappings. The upgrade is intentionally not reversible because restoring the
-old collation-dependent unique indexes can collapse valid byte-distinct identities.
+against the original values. The same connection hash is indexed before mapping
+inventory ordering and limiting, so case-insensitive database collations cannot mix
+names such as `main` and `Main`. The unreleased package publishes one canonical identity
+create migration. Disposable development installations that ran an earlier stub must
+recreate their package test schema deliberately; no compatibility migration or automatic
+host-database reset is provided.
 The package includes an opt-in disposable MariaDB test using
 `MAUTIC_TEST_MARIADB_HOST`, `MAUTIC_TEST_MARIADB_DATABASE` (the name must contain
 `test`), and optional port/username/password variables. SQLite success alone is not
@@ -441,13 +441,21 @@ php artisan mautic:diagnose main
 ```
 
 The first request captures the current maximum remote contact ID. Pages use `id > cursor`
-and `id <= high water`, ordered by ID. The watermark request, each successful page and a
-failed attempt all persist the next allowed request time. Observation rows and the cursor
-commit together.
+and `id <= high water`, ordered by ID. Every eligible request is atomically reserved in
+the shared database before HTTP, with an owner, generation and bounded expiry. The
+reservation records request accounting and the next allowed request time before the
+network call; result commits require the same generation and owner. Expired reservations
+can be recovered, while delayed success/failure and pre-restart results are rejected.
+`request_reservation_seconds` must exceed every configured request timeout.
+
+Observation rows and the cursor commit together.
 A failed request retains its cursor, so a retry overlaps the uncommitted page and unique
 scan/remote-ID keys suppress duplicate observations. Contacts created above the high
 water wait for the next explicit scan. `page_size`, `maximum_pages_per_run` and
-`minimum_page_interval_seconds` bound API load. Start another scan only deliberately:
+`minimum_page_interval_seconds` bound API load. Numeric `Retry-After` from Mautic or a
+transient OAuth token request is a minimum even when it exceeds the local interval.
+Token-persistence uncertainty and reauthorization block the scan instead of becoming an
+ordinary retry. Start another scan only deliberately:
 
 ```bash
 php artisan mautic:reconcile main --restart
@@ -455,7 +463,10 @@ php artisan mautic:reconcile main --restart
 
 Remote scans record unmapped contacts and remote contacts whose mapping is already
 non-active. They never infer deletion from absence, a failed request or an incomplete
-scan, and never replace segment membership with an empty list.
+scan, and never replace segment membership with an empty list. SDK list totals are
+retained: contradictory watermark results and empty/no-progress pages with reported
+remaining rows fail, while short pages remain resumable until the response proves its
+requested range exhausted.
 
 Stale active mappings use a separate bounded recovery command. It performs authoritative
 contact reads and treats only a normalized 404 as missing. Dry-run is the default:
@@ -511,11 +522,18 @@ rule plus `MAUTIC_LIVE_DYNAMIC_SEGMENT_ID`, `MAUTIC_LIVE_DYNAMIC_FIELD` and
 
 Webhook proof requires a local receiver configured in Mautic to append JSONL records with
 `body_base64` and `signature` to `MAUTIC_LIVE_WEBHOOK_CAPTURE_FILE`, plus
-`MAUTIC_LIVE_WEBHOOK_SECRET`. OAuth refresh has a separate
+`MAUTIC_LIVE_WEBHOOK_SECRET`. After signature verification it structurally requires an
+exact contact-update event, fixture email, contact ID and changed field value; ID
+substrings, create events, unrelated nested IDs and incomplete trailing JSONL records do
+not count. OAuth refresh has a separate
 `MAUTIC_LIVE_OAUTH_TESTS=1` gate and requires dedicated client credentials, refresh token
-and an absolute `MAUTIC_LIVE_OAUTH_ROTATED_TOKEN_FILE`; the rotated token is immediately
-written there with mode `0600`. Missing optional setup produces a skip, not compatibility
-evidence. Never point this suite at production or shared contacts.
+and an absolute `MAUTIC_LIVE_OAUTH_ROTATED_TOKEN_FILE`. Before refresh, the harness
+exclusively creates that file, restricts and verifies mode `0600`, and keeps its handle.
+After rotation it writes the complete token JSON and requires the exact byte count plus
+flush/fsync success; otherwise it raises token-persistence uncertainty without retrying.
+Precreation prevents avoidable preparation loss but cannot remove the crash window after
+remote rotation and before durable local persistence. Missing optional setup produces a
+skip, not compatibility evidence. Never point this suite at production or shared contacts.
 
 ## Normalized contact reads
 

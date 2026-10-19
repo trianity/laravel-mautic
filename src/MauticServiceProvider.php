@@ -242,6 +242,9 @@ final class MauticServiceProvider extends ServiceProvider
         });
         $this->app->singleton(MappingRecoveryService::class);
         $this->app->singleton(ContactReconciler::class, function ($app): ContactReconciler {
+            $reservationSeconds = (int) $app['config']->get('mautic.reconciliation.request_reservation_seconds', 30);
+            $this->validateReconciliationReservation($app['config'], $reservationSeconds);
+
             return new ContactReconciler(
                 $app->make(DatabaseReconciliationStore::class),
                 $app->make(ReconciliationSource::class),
@@ -250,6 +253,7 @@ final class MauticServiceProvider extends ServiceProvider
                 (int) $app['config']->get('mautic.reconciliation.page_size', 100),
                 (int) $app['config']->get('mautic.reconciliation.minimum_page_interval_seconds', 1),
                 (int) $app['config']->get('mautic.reconciliation.maximum_pages_per_run', 1),
+                $reservationSeconds,
             );
         });
         $this->app->singleton(DatabaseMauticDiagnostics::class);
@@ -268,7 +272,6 @@ final class MauticServiceProvider extends ServiceProvider
             ], 'mautic-migrations');
             $identityMigration = [
                 __DIR__.'/../database/migrations/create_mautic_contact_mappings.php.stub' => database_path('migrations/2026_10_19_010000_create_mautic_contact_mappings.php'),
-                __DIR__.'/../database/migrations/add_identity_hashes_to_mautic_contact_mappings.php.stub' => database_path('migrations/2026_10_19_011000_add_identity_hashes_to_mautic_contact_mappings.php'),
             ];
             $this->publishes($identityMigration, 'mautic-migrations');
             $this->publishes($identityMigration, 'mautic-identity-migrations');
@@ -370,6 +373,28 @@ final class MauticServiceProvider extends ServiceProvider
             $timeout = $values['timeout'] ?? 10;
             if ((is_int($timeout) || is_float($timeout)) && $operationBudgetSeconds < $timeout) {
                 throw new InvalidConfiguration('The outbox operation budget must cover every individual Mautic request timeout.');
+            }
+        }
+    }
+
+    private function validateReconciliationReservation(Repository $config, int $reservationSeconds): void
+    {
+        if ($reservationSeconds < 1) {
+            throw new InvalidConfiguration('The reconciliation request reservation must be positive.');
+        }
+        $connections = $config->get('mautic.connections', []);
+        if (! is_array($connections)) {
+            throw new InvalidConfiguration('Mautic connections must be a named array.');
+        }
+        foreach ($connections as $values) {
+            if (! is_array($values)) {
+                continue;
+            }
+            $timeout = $values['timeout'] ?? 10;
+            if ((is_int($timeout) || is_float($timeout)) && $reservationSeconds <= $timeout) {
+                throw new InvalidConfiguration(
+                    'The reconciliation request reservation must be longer than every Mautic request timeout.',
+                );
             }
         }
     }

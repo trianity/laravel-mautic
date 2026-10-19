@@ -27,15 +27,28 @@ final readonly class SdkConnectionReconciliationSource
         if (! is_array($raw)) {
             $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
         }
-        $response = $this->boundary->successful($raw, ReadOperation::SearchContacts, $this->connection);
+        $response = $this->boundary->successful(
+            $raw,
+            ReadOperation::SearchContacts,
+            $this->connection,
+            SdkResponseMetadata::retryAfterForResponse($raw, $this->contacts),
+        );
         if (! is_int($response['total'] ?? null) || ! is_array($response['contacts'] ?? null)) {
             $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
         }
-        if ($response['contacts'] === []) {
+        if ($response['total'] === 0 && $response['contacts'] === []) {
             return 0;
         }
+        if ($response['total'] < 1 || count($response['contacts']) !== 1) {
+            $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
+        }
 
-        return $this->mapper->contact(reset($response['contacts']), ReadOperation::SearchContacts)->remoteId;
+        $remoteId = $this->mapper->contact(reset($response['contacts']), ReadOperation::SearchContacts)->remoteId;
+        if ($remoteId < 1) {
+            $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
+        }
+
+        return $remoteId;
     }
 
     public function page(int $fromRemoteId, int $throughRemoteId, int $limit): ReconciliationPage
@@ -47,16 +60,31 @@ final readonly class SdkConnectionReconciliationSource
         if (! is_array($raw)) {
             $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
         }
-        $response = $this->boundary->successful($raw, ReadOperation::SearchContacts, $this->connection);
+        $response = $this->boundary->successful(
+            $raw,
+            ReadOperation::SearchContacts,
+            $this->connection,
+            SdkResponseMetadata::retryAfterForResponse($raw, $this->contacts),
+        );
         if (! is_int($response['total'] ?? null) || ! is_array($response['contacts'] ?? null)) {
             $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
         }
 
         $mapped = [];
+        $previous = $fromRemoteId;
         foreach ($response['contacts'] as $payload) {
-            $mapped[] = $this->mapper->contact($payload, ReadOperation::SearchContacts);
+            $contact = $this->mapper->contact($payload, ReadOperation::SearchContacts);
+            if ($contact->remoteId <= $previous || $contact->remoteId > $throughRemoteId) {
+                $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
+            }
+            $mapped[] = $contact;
+            $previous = $contact->remoteId;
+        }
+        if (count($mapped) > $limit || $response['total'] < count($mapped)
+            || ($mapped === [] && $response['total'] > 0)) {
+            $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
         }
 
-        return new ReconciliationPage($mapped);
+        return new ReconciliationPage($mapped, $response['total']);
     }
 }

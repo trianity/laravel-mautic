@@ -67,6 +67,7 @@ final readonly class DatabaseContactMappingRepository implements ContactMappingR
         $now = date('Y-m-d H:i:s');
         $this->database()->table($this->table)->insertOrIgnore([
             'connection' => $connection,
+            'connection_hash' => ContactIdentityHasher::connection($connection),
             'local_scope' => $localReference->scope,
             'local_key' => $localReference->key,
             'local_identity_hash' => ContactIdentityHasher::local($connection, $localReference),

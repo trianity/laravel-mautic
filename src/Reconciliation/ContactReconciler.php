@@ -10,7 +10,13 @@ use Trianity\LaravelMautic\Contracts\ContactMappingRepository;
 use Trianity\LaravelMautic\Contracts\ReconciliationSource;
 use Trianity\LaravelMautic\Exceptions\MauticReadException;
 use Trianity\LaravelMautic\Exceptions\OAuthAuthenticationException;
+use Trianity\LaravelMautic\Exceptions\OAuthReauthorizationRequired;
+use Trianity\LaravelMautic\Exceptions\OAuthTokenPersistenceUncertain;
+use Trianity\LaravelMautic\Exceptions\OAuthTokenRequestFailed;
 use Trianity\LaravelMautic\Identity\RemoteContactState;
+use Trianity\LaravelMautic\OAuth\OAuthTokenFailureKind;
+use Trianity\LaravelMautic\Read\ReadFailureKind;
+use Trianity\LaravelMautic\Read\ReadOperation;
 
 final readonly class ContactReconciler
 {
@@ -22,6 +28,7 @@ final readonly class ContactReconciler
         private int $pageSize = 100,
         private int $minimumPageIntervalSeconds = 1,
         private int $maximumPagesPerRun = 1,
+        private int $requestReservationSeconds = 30,
     ) {}
 
     public function run(string $connection, bool $restart = false): ReconciliationCheckpoint
@@ -30,43 +37,64 @@ final readonly class ContactReconciler
             throw new RuntimeException('The reconciliation page limit per run must be between 1 and 100.');
         }
         $checkpoint = $this->store->begin($connection, $this->pageSize, $restart);
-        if ($checkpoint->status === ReconciliationStatus::Completed
-            || ($checkpoint->nextPageAt !== null && $checkpoint->nextPageAt > $this->clock->now())) {
-            return $checkpoint;
-        }
-
-        try {
-            if ($checkpoint->highWaterRemoteId === null) {
-                $checkpoint = $this->store->setHighWatermark(
-                    $checkpoint,
-                    $this->source->highWatermark($connection),
-                    $this->minimumPageIntervalSeconds,
-                );
-            }
-            if ($checkpoint->status === ReconciliationStatus::Completed
+        $pages = 0;
+        while (true) {
+            if (in_array($checkpoint->status, [ReconciliationStatus::Completed, ReconciliationStatus::Blocked], true)
                 || ($checkpoint->nextPageAt !== null && $checkpoint->nextPageAt > $this->clock->now())) {
                 return $checkpoint;
             }
+            $reservation = $this->store->reserve(
+                $checkpoint,
+                $this->minimumPageIntervalSeconds,
+                $this->requestReservationSeconds,
+            );
+            if ($reservation === null) {
+                return $this->store->get($connection) ?? $checkpoint;
+            }
 
-            for ($pageNumber = 0; $pageNumber < $this->maximumPagesPerRun; $pageNumber++) {
+            try {
+                if ($reservation->highWaterRemoteId === null) {
+                    $checkpoint = $this->store->setHighWatermark(
+                        $reservation,
+                        $this->source->highWatermark($connection),
+                    );
+                    if ($checkpoint->status === ReconciliationStatus::Completed
+                        || $this->minimumPageIntervalSeconds > 0) {
+                        return $checkpoint;
+                    }
+
+                    continue;
+                }
+
                 $page = $this->source->page(
                     $connection,
-                    $checkpoint->cursorRemoteId,
-                    $checkpoint->highWaterRemoteId ?? 0,
-                    $checkpoint->pageSize,
+                    $reservation->cursorRemoteId,
+                    $reservation->highWaterRemoteId,
+                    $reservation->pageSize,
                 );
                 $rawCount = count($page->contacts);
+                if ($page->remainingCount < $rawCount
+                    || $rawCount > $reservation->pageSize
+                    || ($rawCount === 0 && $page->remainingCount > 0)) {
+                    throw new MauticReadException(
+                        ReadFailureKind::UnexpectedResponse,
+                        ReadOperation::SearchContacts,
+                        $connection,
+                    );
+                }
                 $contacts = [];
+                $previous = $reservation->cursorRemoteId;
                 foreach ($page->contacts as $contact) {
-                    if ($contact->remoteId <= $checkpoint->cursorRemoteId
-                        || $contact->remoteId > ($checkpoint->highWaterRemoteId ?? 0)) {
-                        throw new RuntimeException('The reconciliation source returned a contact outside its requested watermark.');
+                    if ($contact->remoteId <= $previous
+                        || $contact->remoteId > $reservation->highWaterRemoteId) {
+                        throw new MauticReadException(
+                            ReadFailureKind::UnexpectedResponse,
+                            ReadOperation::SearchContacts,
+                            $connection,
+                        );
                     }
                     $contacts[$contact->remoteId] = $contact;
-                }
-                ksort($contacts, SORT_NUMERIC);
-                if ($rawCount > 0 && $contacts === []) {
-                    throw new RuntimeException('The reconciliation source made no forward progress.');
+                    $previous = $contact->remoteId;
                 }
 
                 $findings = [];
@@ -79,32 +107,43 @@ final readonly class ContactReconciler
                     }
                 }
 
-                $newCursor = $contacts === [] ? $checkpoint->cursorRemoteId : (int) array_key_last($contacts);
-                $complete = $rawCount === 0
-                    || $rawCount < $checkpoint->pageSize
-                    || $newCursor >= ($checkpoint->highWaterRemoteId ?? 0);
+                $newCursor = $contacts === [] ? $reservation->cursorRemoteId : (int) array_key_last($contacts);
+                $complete = $page->remainingCount === $rawCount
+                    || $newCursor >= $reservation->highWaterRemoteId;
                 $checkpoint = $this->store->recordPage(
-                    $checkpoint,
+                    $reservation,
                     array_keys($contacts),
                     $findings,
                     $newCursor,
                     $complete,
-                    $this->minimumPageIntervalSeconds,
                 );
-                if ($complete || $this->minimumPageIntervalSeconds > 0) {
-                    break;
+                $pages++;
+                if ($complete || $this->minimumPageIntervalSeconds > 0 || $pages >= $this->maximumPagesPerRun) {
+                    return $checkpoint;
                 }
-            }
+            } catch (MauticReadException $exception) {
+                return $this->store->fail($reservation, $exception->kind->value, $exception->retryAfterSeconds);
+            } catch (OAuthTokenPersistenceUncertain) {
+                return $this->store->block($reservation, 'oauth_token_persistence_uncertain');
+            } catch (OAuthReauthorizationRequired) {
+                return $this->store->block($reservation, 'oauth_reauthorization_required');
+            } catch (OAuthTokenRequestFailed $exception) {
+                if (! in_array($exception->kind, [
+                    OAuthTokenFailureKind::Throttled,
+                    OAuthTokenFailureKind::RemoteServer,
+                    OAuthTokenFailureKind::Network,
+                ], true)) {
+                    return $this->store->block($reservation, 'oauth_'.$exception->kind->value);
+                }
 
-            return $checkpoint;
-        } catch (MauticReadException $exception) {
-            return $this->store->fail($checkpoint, $exception->kind->value, $this->minimumPageIntervalSeconds);
-        } catch (OAuthAuthenticationException $exception) {
-            return $this->store->fail(
-                $checkpoint,
-                'oauth_'.$exception->failureKind->value,
-                $this->minimumPageIntervalSeconds,
-            );
+                return $this->store->fail(
+                    $reservation,
+                    'oauth_'.$exception->kind->value,
+                    $exception->retryAfterSeconds,
+                );
+            } catch (OAuthAuthenticationException $exception) {
+                return $this->store->fail($reservation, 'oauth_'.$exception->failureKind->value);
+            }
         }
     }
 }

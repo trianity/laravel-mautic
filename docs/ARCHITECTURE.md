@@ -38,8 +38,8 @@ non-allowlisted and protected side-effect fields, while preserving explicit scal
 null and empty values. Updates use PATCH with create-if-missing disabled. Creation
 preflights non-empty email values because Mautic can merge duplicate-email creates;
 known matches and intra-batch duplicates are rejected. This read-before-write check
-does not eliminate concurrent races, so durable identity and reconciliation remain
-future work.
+does not eliminate concurrent races; the separate durable identity and reconciliation
+layers provide evidence and explicit recovery without making the preflight atomic.
 
 The same response boundary classifies mutation failures. Batch results preserve the
 server's request indexes and separately classify every item as successful, failed or
@@ -173,14 +173,19 @@ The explicit reconciliation service captures a per-connection maximum remote ID 
 advances an ascending ID keyset cursor in bounded pages. Its checkpoint, ID-only
 observations and finding codes are durable. A page and its cursor commit atomically, so
 a failed request or process crash replays the uncommitted page; unique scan/remote-ID
-keys deduplicate that overlap. Configured page size, pages per run and minimum interval
-bound load. A scan performs no host business write and never infers deletion or empty
-segment membership from absence, an incomplete page or a failure.
+keys deduplicate that overlap. A generation- and owner-bound database reservation commits
+request scheduling before HTTP and rejects stale results after expiry, recovery or scan
+restart. Configured page size, pages per run, minimum interval, server `Retry-After` and
+bounded reservation expiry constrain load. SDK totals, ordering and bounds must prove
+range exhaustion; contradictory or no-progress responses retain the committed cursor.
+A scan performs no host business write and never infers deletion or empty segment
+membership from absence, an incomplete page or a failure.
 
 Missing mapping recovery is separate. It keyset-pages active local mappings and checks
 each remote ID. Dry-run is the default; only a normalized not-found result is actionable.
 Applying requires explicit actor/reason input and same-database identity/reconciliation
-storage so the generation-checked `missing` transition and audit commit atomically. No
+storage so the generation-checked `missing` transition and audit commit atomically.
+Inventory selection uses a byte-exact connection hash before ordering and limiting. No
 automatic relink, recreation or deletion exists.
 
 Connection diagnostics expose only status counts, current checkpoint metadata, finding

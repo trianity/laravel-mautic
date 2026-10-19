@@ -45,6 +45,16 @@
 
 ### Fixed
 
+- Reserve reconciliation HTTP work atomically in shared storage, reject stale results,
+  recover abandoned reservations and retain accurate durable request spacing/counts.
+- Preserve reconciliation `Retry-After` metadata, validate SDK pagination evidence and
+  block unsafe OAuth persistence/reauthorization outcomes.
+- Select mapping inventory through byte-exact connection hashes before pagination limits.
+- Prepare and verify the live OAuth output before rotation, persist complete tokens, and
+  structurally match signed live webhook update evidence.
+- Consolidate the unreleased identity schema into one canonical create migration without
+  a development compatibility bridge.
+
 - Preserve every partial outbox revision in sequential aggregate order, including
   create-before-update prerequisites and explicit blocking behind unresolved commands.
 - Treat expired in-flight operations and uncertain create persistence as reconciliation
@@ -57,8 +67,8 @@
 - Replace unreleased incremental outbox migrations with one canonical final-schema
   migration and no development-version compatibility machinery.
 
-- Enforce byte-exact contact identities with collation-independent tuple hashes,
-  original-value verification and an explicit validating upgrade migration.
+- Enforce byte-exact contact identities with collation-independent tuple hashes and
+  original-value verification.
 - Normalize structured email query values consistently for discovery and duplicate
   preflight, and count repeated paginated contacts by distinct remote ID.
 - Normalize Mautic's separate indexed batch contacts, status codes and errors into

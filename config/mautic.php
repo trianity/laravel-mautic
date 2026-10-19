@@ -55,6 +55,7 @@ return [
         'page_size' => 100,
         'minimum_page_interval_seconds' => 1,
         'maximum_pages_per_run' => 1,
+        'request_reservation_seconds' => 30,
     ],
 
     'connections' => [

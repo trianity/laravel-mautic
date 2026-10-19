@@ -32,44 +32,52 @@ final readonly class DatabaseReconciliationStore
         }
         $hash = ContactIdentityHasher::connection($connection);
         $now = $this->clock->now();
+        $initial = [
+            'connection_hash' => $hash,
+            'connection' => $connection,
+            'scan_id' => bin2hex(random_bytes(32)),
+            'high_water_remote_id' => null,
+            'cursor_remote_id' => 0,
+            'status' => ReconciliationStatus::Running->value,
+            'page_size' => $pageSize,
+            'observed_count' => 0,
+            'finding_count' => 0,
+            'request_count' => 0,
+            'next_page_at' => null,
+            'last_failure_kind' => null,
+            'generation' => 0,
+            'reservation_owner' => null,
+            'reservation_expires_at' => null,
+            'started_at' => $now,
+            'completed_at' => null,
+            'created_at' => $this->timestamp($now),
+            'updated_at' => $this->timestamp($now),
+        ];
+        if (! $restart) {
+            $this->database()->table($this->checkpointsTable)->insertOrIgnore($initial);
+            $checkpoint = $this->get($connection)
+                ?? throw new RuntimeException('The reconciliation checkpoint was not persisted.');
+            $this->assertConnection($checkpoint, $connection);
 
-        return $this->database()->transaction(function () use ($connection, $pageSize, $restart, $hash, $now): ReconciliationCheckpoint {
+            return $checkpoint;
+        }
+
+        return $this->database()->transaction(function () use ($connection, $hash, $initial): ReconciliationCheckpoint {
             $row = $this->database()->table($this->checkpointsTable)
                 ->where('connection_hash', $hash)
                 ->lockForUpdate()
                 ->first();
-            if ($row !== null && ! $restart) {
-                $checkpoint = $this->map($row);
-                $this->assertConnection($checkpoint, $connection);
-
-                return $checkpoint;
-            }
-
-            $scanId = bin2hex(random_bytes(32));
-            $values = [
-                'connection_hash' => $hash,
-                'connection' => $connection,
-                'scan_id' => $scanId,
-                'high_water_remote_id' => null,
-                'cursor_remote_id' => 0,
-                'status' => ReconciliationStatus::Running->value,
-                'page_size' => $pageSize,
-                'observed_count' => 0,
-                'finding_count' => 0,
-                'request_count' => 0,
-                'next_page_at' => null,
-                'last_failure_kind' => null,
-                'started_at' => $now,
-                'completed_at' => null,
-                'created_at' => $this->timestamp($now),
-                'updated_at' => $this->timestamp($now),
-            ];
             if ($row === null) {
-                $this->database()->table($this->checkpointsTable)->insert($values);
-            } else {
-                unset($values['connection_hash'], $values['created_at']);
-                $this->database()->table($this->checkpointsTable)->where('connection_hash', $hash)->update($values);
+                $this->database()->table($this->checkpointsTable)->insert($initial);
+
+                return $this->get($connection)
+                    ?? throw new RuntimeException('The reconciliation checkpoint was not persisted.');
             }
+
+            $values = $initial;
+            $values['generation'] = ((int) ($row->generation ?? 0)) + 1;
+            unset($values['connection_hash'], $values['created_at']);
+            $this->database()->table($this->checkpointsTable)->where('connection_hash', $hash)->update($values);
 
             return $this->get($connection) ?? throw new RuntimeException('The reconciliation checkpoint was not persisted.');
         });
@@ -92,22 +100,22 @@ final readonly class DatabaseReconciliationStore
     public function setHighWatermark(
         ReconciliationCheckpoint $expected,
         int $remoteId,
-        int $minimumIntervalSeconds,
     ): ReconciliationCheckpoint {
         if ($remoteId < 0) {
             throw new RuntimeException('The reconciliation high-water mark cannot be negative.');
         }
         $now = $this->clock->now();
         $complete = $remoteId === 0;
-        $updated = $this->expected($expected)
+        $updated = $this->expectedReservation($expected)
             ->whereNull('high_water_remote_id')
             ->update([
                 'high_water_remote_id' => $remoteId,
                 'status' => $complete ? ReconciliationStatus::Completed->value : ReconciliationStatus::Running->value,
-                'request_count' => $expected->requestCount + 1,
-                'next_page_at' => $complete ? null : $now + max(0, $minimumIntervalSeconds),
+                'next_page_at' => $complete ? null : $expected->nextPageAt,
                 'completed_at' => $complete ? $now : null,
                 'last_failure_kind' => null,
+                'reservation_owner' => null,
+                'reservation_expires_at' => null,
                 'updated_at' => $this->timestamp($now),
             ]);
         if ($updated !== 1) {
@@ -127,7 +135,6 @@ final readonly class DatabaseReconciliationStore
         array $findings,
         int $newCursor,
         bool $complete,
-        int $minimumIntervalSeconds,
     ): ReconciliationCheckpoint {
         $now = $this->clock->now();
 
@@ -137,10 +144,9 @@ final readonly class DatabaseReconciliationStore
             $findings,
             $newCursor,
             $complete,
-            $minimumIntervalSeconds,
             $now,
         ): ReconciliationCheckpoint {
-            $current = $this->expected($expected)->lockForUpdate()->first();
+            $current = $this->expectedReservation($expected)->lockForUpdate()->first();
             if ($current === null) {
                 throw new RuntimeException('The reconciliation checkpoint changed concurrently.');
             }
@@ -165,17 +171,21 @@ final readonly class DatabaseReconciliationStore
                 ]);
             }
 
-            $this->expected($expected)->update([
+            $updated = $this->expectedReservation($expected)->update([
                 'cursor_remote_id' => $newCursor,
                 'status' => $complete ? ReconciliationStatus::Completed->value : ReconciliationStatus::Running->value,
                 'observed_count' => $expected->observedCount + $observed,
                 'finding_count' => $expected->findingCount + $findingCount,
-                'request_count' => $expected->requestCount + 1,
-                'next_page_at' => $complete ? null : $now + max(0, $minimumIntervalSeconds),
+                'next_page_at' => $complete ? null : $expected->nextPageAt,
                 'last_failure_kind' => null,
+                'reservation_owner' => null,
+                'reservation_expires_at' => null,
                 'completed_at' => $complete ? $now : null,
                 'updated_at' => $this->timestamp($now),
             ]);
+            if ($updated !== 1) {
+                throw new RuntimeException('The reconciliation request reservation changed concurrently.');
+            }
 
             return $this->get($expected->connection) ?? throw new RuntimeException('The reconciliation checkpoint was lost.');
         });
@@ -184,18 +194,82 @@ final readonly class DatabaseReconciliationStore
     public function fail(
         ReconciliationCheckpoint $expected,
         string $failureKind,
-        int $minimumIntervalSeconds,
+        ?int $retryAfterSeconds = null,
     ): ReconciliationCheckpoint {
         $now = $this->clock->now();
-        $updated = $this->expected($expected)->update([
+        $nextPageAt = max(
+            $expected->nextPageAt ?? $now,
+            $now + max(0, $retryAfterSeconds ?? 0),
+        );
+        $updated = $this->expectedReservation($expected)->update([
             'status' => ReconciliationStatus::Failed->value,
-            'request_count' => $expected->requestCount + 1,
-            'next_page_at' => $now + max(0, $minimumIntervalSeconds),
-            'last_failure_kind' => substr($failureKind, 0, 32),
+            'next_page_at' => $nextPageAt,
+            'last_failure_kind' => substr($failureKind, 0, 64),
+            'reservation_owner' => null,
+            'reservation_expires_at' => null,
             'updated_at' => $this->timestamp($now),
         ]);
         if ($updated !== 1) {
             throw new RuntimeException('The reconciliation checkpoint changed concurrently.');
+        }
+
+        return $this->get($expected->connection) ?? throw new RuntimeException('The reconciliation checkpoint was lost.');
+    }
+
+    public function block(ReconciliationCheckpoint $expected, string $failureKind): ReconciliationCheckpoint
+    {
+        $now = $this->clock->now();
+        $updated = $this->expectedReservation($expected)->update([
+            'status' => ReconciliationStatus::Blocked->value,
+            'next_page_at' => null,
+            'last_failure_kind' => substr($failureKind, 0, 64),
+            'reservation_owner' => null,
+            'reservation_expires_at' => null,
+            'updated_at' => $this->timestamp($now),
+        ]);
+        if ($updated !== 1) {
+            throw new RuntimeException('The reconciliation request reservation changed concurrently.');
+        }
+
+        return $this->get($expected->connection) ?? throw new RuntimeException('The reconciliation checkpoint was lost.');
+    }
+
+    public function reserve(
+        ReconciliationCheckpoint $expected,
+        int $minimumIntervalSeconds,
+        int $reservationSeconds,
+    ): ?ReconciliationCheckpoint {
+        if ($reservationSeconds < 1) {
+            throw new RuntimeException('The reconciliation request reservation must be positive.');
+        }
+        $now = $this->clock->now();
+        if ($expected->status === ReconciliationStatus::Completed
+            || $expected->status === ReconciliationStatus::Blocked
+            || ($expected->nextPageAt !== null && $expected->nextPageAt > $now)
+            || ($expected->reservationOwner !== null && ($expected->reservationExpiresAt ?? PHP_INT_MAX) > $now)) {
+            return null;
+        }
+
+        $owner = bin2hex(random_bytes(32));
+        $query = $this->expected($expected)
+            ->whereIn('status', [ReconciliationStatus::Running->value, ReconciliationStatus::Failed->value])
+            ->where(function (Builder $query) use ($now): void {
+                $query->whereNull('next_page_at')->orWhere('next_page_at', '<=', $now);
+            })
+            ->where(function (Builder $query) use ($now): void {
+                $query->whereNull('reservation_owner')->orWhere('reservation_expires_at', '<=', $now);
+            });
+        $updated = $query->update([
+            'status' => ReconciliationStatus::Running->value,
+            'request_count' => $expected->requestCount + 1,
+            'next_page_at' => $now + max(0, $minimumIntervalSeconds),
+            'generation' => $expected->generation + 1,
+            'reservation_owner' => $owner,
+            'reservation_expires_at' => $now + $reservationSeconds,
+            'updated_at' => $this->timestamp($now),
+        ]);
+        if ($updated !== 1) {
+            return null;
         }
 
         return $this->get($expected->connection) ?? throw new RuntimeException('The reconciliation checkpoint was lost.');
@@ -236,7 +310,18 @@ final readonly class DatabaseReconciliationStore
         return $this->database()->table($this->checkpointsTable)
             ->where('connection_hash', ContactIdentityHasher::connection($expected->connection))
             ->where('scan_id', $expected->scanId)
-            ->where('cursor_remote_id', $expected->cursorRemoteId);
+            ->where('generation', $expected->generation);
+    }
+
+    private function expectedReservation(ReconciliationCheckpoint $expected): Builder
+    {
+        if ($expected->reservationOwner === null) {
+            throw new RuntimeException('A current reconciliation request reservation is required.');
+        }
+
+        return $this->expected($expected)
+            ->where('reservation_owner', $expected->reservationOwner)
+            ->where('reservation_expires_at', $expected->reservationExpiresAt);
     }
 
     private function database(): ConnectionInterface
@@ -265,6 +350,9 @@ final readonly class DatabaseReconciliationStore
             (int) ($row->request_count ?? 0),
             is_int($row->next_page_at ?? null) ? $row->next_page_at : null,
             is_string($row->last_failure_kind ?? null) ? $row->last_failure_kind : null,
+            (int) ($row->generation ?? 0),
+            is_string($row->reservation_owner ?? null) ? $row->reservation_owner : null,
+            is_int($row->reservation_expires_at ?? null) ? $row->reservation_expires_at : null,
         );
     }
 

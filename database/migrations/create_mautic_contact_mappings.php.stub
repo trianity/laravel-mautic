@@ -16,6 +16,7 @@ return new class extends Migration
         $schema->create(config('mautic.identity.mappings_table', 'mautic_contact_mappings'), function (Blueprint $table): void {
             $table->id();
             $table->string('connection', 191);
+            $table->char('connection_hash', 64);
             $table->string('local_scope', 191);
             $table->string('local_key', 191);
             $table->char('local_identity_hash', 64);
@@ -29,6 +30,7 @@ return new class extends Migration
             $table->unique('local_identity_hash', 'mautic_mapping_local_unique');
             $table->unique('remote_identity_hash', 'mautic_mapping_remote_unique');
             $table->index(['connection', 'remote_state'], 'mautic_mapping_state_index');
+            $table->index(['connection_hash', 'remote_state', 'remote_id'], 'mautic_mapping_inventory_index');
         });
     }
 

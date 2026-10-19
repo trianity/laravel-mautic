@@ -18,5 +18,8 @@ final readonly class ReconciliationCheckpoint
         public int $requestCount,
         public ?int $nextPageAt,
         public ?string $lastFailureKind,
+        public int $generation,
+        public ?string $reservationOwner,
+        public ?int $reservationExpiresAt,
     ) {}
 }

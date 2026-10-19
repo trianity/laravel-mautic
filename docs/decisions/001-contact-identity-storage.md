@@ -84,14 +84,12 @@ Laravel versions require SHA-256 support in PHP and ordinary unique indexes over
 service-backed suite runs; a SQLite pass alone is not MariaDB evidence. No advisory
 locks, database-specific upserts, deferrable constraints or Mautic tables are used.
 
-Fresh installations create hash columns and hash-only unique indexes directly. An
-explicit follow-up migration upgrades the earlier development schema: it adds nullable
-hash columns, validates every original row in PHP, rejects invalid or duplicate exact
-tuples with an actionable exception, backfills both hashes, replaces the collation-
-dependent unique indexes and then makes the hashes required. It never merges, deletes
-or rewrites original identity values. Hosts that already published the earlier
-development migration must publish and run the upgrade migration; editing an already-
-run migration is not an upgrade mechanism.
+The canonical create migration stores local, remote and connection hashes directly.
+The connection hash is indexed with state and remote ID so mapping inventory applies
+byte-exact selection before ordering and limiting even under case-insensitive collations.
+The package is unreleased, so the earlier development upgrade migration was removed.
+Disposable installations that ran an older stub must recreate their package schema;
+the package does not reset or upgrade a host database automatically.
 
 The migration is optional, explicitly publishable and never runs automatically.
 Hosts may replace the repository contract with equivalent durable storage, but must

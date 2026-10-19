@@ -8,5 +8,6 @@ enum ReconciliationStatus: string
 {
     case Running = 'running';
     case Failed = 'failed';
+    case Blocked = 'blocked';
     case Completed = 'completed';
 }

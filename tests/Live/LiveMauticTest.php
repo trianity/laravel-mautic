@@ -13,6 +13,8 @@ use Trianity\LaravelMautic\Http\GuzzleHttpClientFactory;
 use Trianity\LaravelMautic\MauticConnection;
 use Trianity\LaravelMautic\OAuth\HttpOAuthTokenEndpoint;
 use Trianity\LaravelMautic\OAuth\SystemClock;
+use Trianity\LaravelMautic\Tests\Support\LiveWebhookCaptureMatcher;
+use Trianity\LaravelMautic\Tests\Support\RotatedTokenOutput;
 use Trianity\LaravelMautic\Write\ContactFields;
 
 /** @return array{url: string, username: string, password: string, prefix: string, version: string} */
@@ -190,6 +192,7 @@ it('verifies an opt-in local webhook capture with the configured signature secre
     $connection = liveMauticConnection($configuration);
     $email = $configuration['prefix'].'.webhook.'.bin2hex(random_bytes(8)).'@example.test';
     $remoteId = null;
+    $matcher = new LiveWebhookCaptureMatcher;
 
     try {
         $remoteId = $connection->contactWrites()->create(ContactFields::fromArray([
@@ -205,24 +208,16 @@ it('verifies an opt-in local webhook capture with the configured signature secre
         do {
             clearstatcache(true, $capturePath);
             $content = file_get_contents($capturePath, false, null, $offset);
-            foreach (explode("\n", is_string($content) ? $content : '') as $line) {
-                if ($line === '') {
-                    continue;
-                }
-                $capture = json_decode($line, true, flags: JSON_THROW_ON_ERROR);
-                $body = is_array($capture) && is_string($capture['body_base64'] ?? null)
-                    ? base64_decode($capture['body_base64'], true)
-                    : false;
-                $signature = is_array($capture) ? ($capture['signature'] ?? null) : null;
-                if (! is_string($body) || ! is_string($signature)
-                    || ! hash_equals(base64_encode(hash_hmac('sha256', $body, $secret, true)), $signature)) {
-                    continue;
-                }
-                $matched = str_contains($body, '"id":'.$remoteId)
-                    || str_contains($body, '"id": '.$remoteId);
-                if ($matched) {
-                    break 2;
-                }
+            if (is_string($content) && $matcher->containsExpectedUpdate(
+                $content,
+                $secret,
+                $remoteId,
+                $email,
+                'firstname',
+                'WebhookAfter',
+            )) {
+                $matched = true;
+                break;
             }
             if (! $matched) {
                 usleep(500_000);
@@ -249,6 +244,7 @@ it('verifies OAuth refresh only with a dedicated rotating credential output file
         || ! is_string($output) || ! str_starts_with($output, '/')) {
         test()->fail('OAuth live variables and an absolute rotated-token output path are required.');
     }
+    $preparedOutput = RotatedTokenOutput::prepare($output);
     $config = new Repository(['mautic' => ['connections' => ['live' => [
         'url' => $configuration['url'],
         'auth' => 'oauth2',
@@ -277,20 +273,8 @@ it('verifies OAuth refresh only with a dedicated rotating credential output file
         new SystemClock,
     );
     $rotated = $endpoint->refresh('live', new OAuthToken('expired', $refreshToken, 1));
-    $handle = fopen($output, 'x+b');
-    if ($handle === false) {
-        test()->fail('The rotated-token output must be a new exclusively created file.');
-    }
-    if (! chmod($output, 0600)) {
-        fclose($handle);
-        test()->fail('The rotated-token output could not be restricted before writing the secret.');
-    }
-    $written = fwrite($handle, $rotated->refreshToken);
-    $flushed = fflush($handle);
-    fclose($handle);
+    $preparedOutput->persist($rotated, 'live');
 
-    expect($written)->toBeGreaterThan(0)
-        ->and($flushed)->toBeTrue()
-        ->and($rotated->accessToken)->not->toBe('')
+    expect($rotated->accessToken)->not->toBe('')
         ->and($rotated->expiresAt)->toBeGreaterThan(time());
 });

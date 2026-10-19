@@ -8,6 +8,7 @@ use Illuminate\Database\ConnectionInterface;
 use Illuminate\Database\ConnectionResolverInterface;
 use RuntimeException;
 use Trianity\LaravelMautic\Contracts\ContactMappingRepository;
+use Trianity\LaravelMautic\Identity\ContactIdentityHasher;
 use Trianity\LaravelMautic\Identity\RemoteContactState;
 
 final readonly class DatabaseMappingInventory
@@ -25,14 +26,17 @@ final readonly class DatabaseMappingInventory
             throw new RuntimeException('Mapping recovery requires a non-negative cursor and a limit from 1 to 100.');
         }
         $rows = $this->database()->table($this->table)
+            ->where('connection_hash', ContactIdentityHasher::connection($connection))
             ->where('connection', $connection)
             ->where('remote_state', RemoteContactState::Active->value)
             ->where('remote_id', '>', $afterRemoteId)
             ->orderBy('remote_id')
-            ->limit($limit)
+            ->limit($limit + 1)
             ->pluck('remote_id')
             ->map(static fn (mixed $id): int => (int) $id)
             ->all();
+        $complete = count($rows) <= $limit;
+        $rows = array_slice($rows, 0, $limit);
 
         $found = [];
         foreach ($rows as $remoteId) {
@@ -45,7 +49,7 @@ final readonly class DatabaseMappingInventory
         return new MappingInventoryPage(
             $found,
             $rows === [] ? $afterRemoteId : max($rows),
-            count($rows) < $limit,
+            $complete,
         );
     }
 

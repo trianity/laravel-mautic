@@ -25,7 +25,10 @@ return new class extends Migration
             $table->unsignedBigInteger('finding_count')->default(0);
             $table->unsignedInteger('request_count')->default(0);
             $table->unsignedBigInteger('next_page_at')->nullable();
-            $table->string('last_failure_kind', 32)->nullable();
+            $table->string('last_failure_kind', 64)->nullable();
+            $table->unsignedBigInteger('generation')->default(0);
+            $table->string('reservation_owner', 64)->nullable();
+            $table->unsignedBigInteger('reservation_expires_at')->nullable();
             $table->unsignedBigInteger('started_at');
             $table->unsignedBigInteger('completed_at')->nullable();
             $table->timestamps();

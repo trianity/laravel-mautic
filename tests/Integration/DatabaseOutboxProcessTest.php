@@ -25,6 +25,7 @@ function sharedOutboxProcessDatabase(): array
     $schema->create('mautic_contact_mappings', function (Blueprint $table): void {
         $table->id();
         $table->string('connection', 191);
+        $table->char('connection_hash', 64);
         $table->string('local_scope', 191);
         $table->string('local_key', 191);
         $table->char('local_identity_hash', 64)->unique();
