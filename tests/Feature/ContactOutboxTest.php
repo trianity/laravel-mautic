@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Illuminate\Contracts\Queue\Queue as QueueContract;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Trianity\LaravelMautic\Contracts\Clock;
@@ -15,6 +16,7 @@ use Trianity\LaravelMautic\Exceptions\OAuthReauthorizationRequired;
 use Trianity\LaravelMautic\Exceptions\OAuthTokenPersistenceUncertain;
 use Trianity\LaravelMautic\Exceptions\OAuthTokenRequestFailed;
 use Trianity\LaravelMautic\Exceptions\OutboxConflict;
+use Trianity\LaravelMautic\Identity\ContactIdentityHasher;
 use Trianity\LaravelMautic\Identity\DatabaseContactMappingRepository;
 use Trianity\LaravelMautic\Identity\LocalContactReference;
 use Trianity\LaravelMautic\Jobs\ProcessContactOutboxJob;
@@ -54,6 +56,21 @@ function updateOutboxCommand(string $operationId, int $revision, string $connect
         new LocalContactReference('tenant:acme:crm-contact', 'contact-01'),
         $revision,
         ContactFields::fromArray(['firstname' => 'Revision '.$revision], ['firstname']),
+    );
+}
+
+function scopedUpdateOutboxCommand(
+    string $operationId,
+    string $localKey,
+    int $revision,
+    string $connection = 'main',
+): ContactSyncCommand {
+    return ContactSyncCommand::update(
+        $operationId,
+        $connection,
+        new LocalContactReference('tenant:acme:crm-contact', $localKey),
+        $revision,
+        ContactFields::fromArray(['firstname' => $operationId], ['firstname']),
     );
 }
 
@@ -711,4 +728,231 @@ it('ignores a concurrent duplicate job while the aggregate lease is held', funct
 
     expect($transport->calls)->toBe(1)
         ->and($store->get('concurrent')?->status)->toBe(OutboxStatus::Completed);
+});
+
+it('requires attested audited reconciliation before an ambiguous update releases later revisions', function () {
+    $clock = fixedOutboxClock();
+    $store = new DatabaseOutboxStore(DB::getFacadeRoot(), $clock, 'outbox-test');
+    $reference = new LocalContactReference('tenant:acme:crm-contact', 'attested-update');
+    $mappings = new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'outbox-test');
+    $mappings->claim('main', $reference, 42);
+    $store->record(ContactSyncCommand::update(
+        'ambiguous-update-v1', 'main', $reference, 1,
+        ContactFields::fromArray(['firstname' => 'Ada'], ['firstname']),
+    ));
+    $store->record(ContactSyncCommand::update(
+        'ambiguous-update-v2', 'main', $reference, 2,
+        ContactFields::fromArray(['phone' => '+361'], ['phone']),
+    ));
+    DB::connection('outbox-test')->table('mautic_outbox_commands')
+        ->where('operation_id', 'ambiguous-update-v1')
+        ->update(['status' => 'ambiguous', 'last_error_code' => 'operation_worker_lost']);
+    $operator = new OutboxOperator($store, $mappings);
+
+    expect(fn () => $operator->confirmAmbiguousUpdateApplied(
+        'ambiguous-update-v1', 'operator', 'worker_terminated', false,
+    ))->toThrow(RuntimeException::class)
+        ->and(fn () => $operator->retryFailed('ambiguous-update-v1', 'operator', 'retry'))
+        ->toThrow(RuntimeException::class);
+
+    $operator->confirmAmbiguousUpdateApplied(
+        'ambiguous-update-v1', 'operator', 'worker_terminated', true,
+    );
+    expect($store->get('ambiguous-update-v1')?->status)->toBe(OutboxStatus::Completed)
+        ->and($store->get('ambiguous-update-v1')?->remoteId)->toBe(42)
+        ->and(DB::connection('outbox-test')->table('mautic_outbox_audits')
+            ->where('operation_id', 'ambiguous-update-v1')->value('action'))
+        ->toBe('confirm_update_applied')
+        ->and(fn () => $operator->authorizeAmbiguousUpdateReplay(
+            'ambiguous-update-v1', 'other-operator', 'duplicate_decision', true,
+        ))->toThrow(RuntimeException::class);
+
+    $transport = new class implements ContactSyncTransport
+    {
+        /** @var list<array<string, mixed>> */
+        public array $updates = [];
+
+        public function create(string $connection, ContactFields $fields): int
+        {
+            throw new LogicException('Create was not expected.');
+        }
+
+        public function update(string $connection, int $remoteId, ContactFields $fields): void
+        {
+            $this->updates[] = $fields->toPayload();
+        }
+    };
+    (new OutboxProcessor($store, $transport, $mappings, $clock))->process('ambiguous-update-v2');
+
+    expect($transport->updates)->toBe([['phone' => '+361']])
+        ->and(DB::connection('outbox-test')->table('mautic_outbox_audits')
+            ->where('operation_id', 'ambiguous-update-v1')->count())->toBe(1);
+});
+
+it('replays an ambiguous update only after explicit attested authorization', function () {
+    $clock = fixedOutboxClock();
+    $store = new DatabaseOutboxStore(DB::getFacadeRoot(), $clock, 'outbox-test');
+    $reference = new LocalContactReference('tenant:acme', 'replay-update');
+    $mappings = new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'outbox-test');
+    $mappings->claim('main', $reference, 51);
+    $store->record(ContactSyncCommand::update(
+        'replay-update', 'main', $reference, 1,
+        ContactFields::fromArray(['firstname' => 'Replay'], ['firstname']),
+    ));
+    DB::connection('outbox-test')->table('mautic_outbox_commands')
+        ->where('operation_id', 'replay-update')->update(['status' => 'ambiguous']);
+
+    (new OutboxOperator($store, $mappings))->authorizeAmbiguousUpdateReplay(
+        'replay-update', 'operator', 'request_quiesced', true,
+    );
+
+    expect($store->get('replay-update')?->status)->toBe(OutboxStatus::Pending)
+        ->and($store->get('replay-update')?->remoteId)->toBe(51)
+        ->and(DB::connection('outbox-test')->table('mautic_outbox_audits')
+            ->where('operation_id', 'replay-update')->value('action'))
+        ->toBe('authorize_update_replay');
+
+    $transport = new class implements ContactSyncTransport
+    {
+        public int $updates = 0;
+
+        public function create(string $connection, ContactFields $fields): int
+        {
+            throw new LogicException('Create was not expected.');
+        }
+
+        public function update(string $connection, int $remoteId, ContactFields $fields): void
+        {
+            $this->updates++;
+        }
+    };
+    (new OutboxProcessor($store, $transport, $mappings, $clock))->process('replay-update');
+    expect($store->get('replay-update')?->status)->toBe(OutboxStatus::Completed)
+        ->and($transport->updates)->toBe(1);
+});
+
+it('rolls back an ambiguous update decision when its audit cannot be persisted', function () {
+    $clock = fixedOutboxClock();
+    $store = new DatabaseOutboxStore(DB::getFacadeRoot(), $clock, 'outbox-test');
+    $reference = new LocalContactReference('tenant:acme', 'audit-failure');
+    $mappings = new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'outbox-test');
+    $mappings->claim('main', $reference, 61);
+    $store->record(ContactSyncCommand::update(
+        'audit-failure', 'main', $reference, 1,
+        ContactFields::fromArray(['firstname' => 'Ada'], ['firstname']),
+    ));
+    DB::connection('outbox-test')->table('mautic_outbox_commands')
+        ->where('operation_id', 'audit-failure')->update(['status' => 'ambiguous']);
+    DB::connection('outbox-test')->statement(<<<'SQL'
+        CREATE TRIGGER reject_outbox_audit
+        BEFORE INSERT ON mautic_outbox_audits
+        BEGIN
+            SELECT RAISE(ABORT, 'targeted audit failure');
+        END
+        SQL);
+
+    expect(fn () => (new OutboxOperator($store, $mappings))->confirmAmbiguousUpdateApplied(
+        'audit-failure', 'operator', 'request_quiesced', true,
+    ))->toThrow(QueryException::class)
+        ->and($store->get('audit-failure')?->status)->toBe(OutboxStatus::Ambiguous)
+        ->and(DB::connection('outbox-test')->table('mautic_outbox_audits')->count())->toBe(0);
+});
+
+it('selects only aggregate heads before applying the recovery limit', function (string $status, ?int $nextAttemptAt) {
+    $clock = fixedOutboxClock();
+    $store = new DatabaseOutboxStore(DB::getFacadeRoot(), $clock, 'outbox-test');
+    $store->record(scopedUpdateOutboxCommand('blocked-v1', 'blocked-contact', 1));
+    $store->record(scopedUpdateOutboxCommand('blocked-v2', 'blocked-contact', 2));
+    $store->record(scopedUpdateOutboxCommand('eligible-v1', 'eligible-contact', 1));
+    DB::connection('outbox-test')->table('mautic_outbox_commands')
+        ->where('operation_id', 'blocked-v1')->update([
+            'status' => $status,
+            'next_attempt_at' => $nextAttemptAt,
+        ]);
+
+    expect($store->recoverableOperationIds(1))->toBe(['eligible-v1']);
+})->with([
+    'delayed predecessor' => ['retry_wait', 2_000],
+    'failed predecessor' => ['failed', null],
+    'ambiguous predecessor' => ['ambiguous', null],
+]);
+
+it('recovers an expired aggregate head and advances after its resolution', function () {
+    $clock = fixedOutboxClock();
+    $store = new DatabaseOutboxStore(DB::getFacadeRoot(), $clock, 'outbox-test');
+    $store->record(scopedUpdateOutboxCommand('expired-v1', 'expired-contact', 1));
+    $store->record(scopedUpdateOutboxCommand('expired-v2', 'expired-contact', 2));
+    DB::connection('outbox-test')->table('mautic_outbox_commands')
+        ->where('operation_id', 'expired-v1')->update([
+            'status' => 'processing',
+            'lease_owner' => 'lost',
+            'lease_expires_at' => 999,
+        ]);
+
+    expect($store->recoverableOperationIds(1))->toBe(['expired-v1']);
+    DB::connection('outbox-test')->table('mautic_outbox_commands')
+        ->where('operation_id', 'expired-v1')->update(['status' => 'completed']);
+    expect($store->recoverableOperationIds(1))->toBe(['expired-v2']);
+});
+
+it('skips connection-blocked aggregate heads before applying the recovery limit', function () {
+    $clock = fixedOutboxClock();
+    $store = new DatabaseOutboxStore(DB::getFacadeRoot(), $clock, 'outbox-test');
+    $store->record(scopedUpdateOutboxCommand('blocked-connection', 'main-contact', 1));
+    $store->record(scopedUpdateOutboxCommand('open-connection', 'secondary-contact', 1, 'secondary'));
+    DB::connection('outbox-test')->table('mautic_outbox_connection_blocks')->insert([
+        'connection_hash' => ContactIdentityHasher::connection('main'),
+        'connection' => 'main',
+        'reason_code' => 'oauth_reauthorization_required',
+        'created_at' => 1_000,
+    ]);
+
+    expect($store->recoverableOperationIds(1))->toBe(['open-connection']);
+});
+
+it('retains a create ID when its first remote-success persistence write fails', function () {
+    $clock = fixedOutboxClock();
+    $store = new DatabaseOutboxStore(DB::getFacadeRoot(), $clock, 'outbox-test');
+    $reference = new LocalContactReference('tenant:acme', 'first-write-failure');
+    $store->record(ContactSyncCommand::create(
+        'first-write-failure', 'main', $reference, 1,
+        ContactFields::fromArray(['email' => 'fault@example.test'], ['email']),
+    ));
+    DB::connection('outbox-test')->statement(<<<'SQL'
+        CREATE TRIGGER fail_first_remote_success
+        BEFORE UPDATE ON mautic_outbox_commands
+        WHEN NEW.operation_id = 'first-write-failure'
+          AND NEW.remote_id = 91
+          AND NEW.delivery_stage = 'remote_succeeded'
+          AND NEW.last_error_code IS NULL
+        BEGIN
+            SELECT RAISE(ABORT, 'targeted remote-success write failure');
+        END
+        SQL);
+    $transport = new class implements ContactSyncTransport
+    {
+        public int $creates = 0;
+
+        public function create(string $connection, ContactFields $fields): int
+        {
+            $this->creates++;
+
+            return 91;
+        }
+
+        public function update(string $connection, int $remoteId, ContactFields $fields): void {}
+    };
+    $processor = new OutboxProcessor(
+        $store,
+        $transport,
+        new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'outbox-test'),
+        $clock,
+    );
+
+    expect(fn () => $processor->process('first-write-failure'))->toThrow(QueryException::class);
+    $processor->process('first-write-failure');
+
+    expect($store->get('first-write-failure')?->status)->toBe(OutboxStatus::Ambiguous)
+        ->and($store->get('first-write-failure')?->remoteId)->toBe(91)
+        ->and($transport->creates)->toBe(1);
 });

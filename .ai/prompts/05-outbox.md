@@ -203,3 +203,168 @@ Report:
 
 Do not weaken tests to accommodate unsafe behavior. Do not publish a
 release or start the next roadmap task.
+
+===
+
+## Task 05B — Targeted outbox recovery corrections
+
+Correct the four findings below in the existing Task 05/05A implementation.
+Stay within the outbound outbox scope. Do not start Task 06.
+
+Read AGENTS.md, .ai/STATE.md, the previous Task 05 instructions, and
+docs/decisions/002-outbox-delivery.md first. Verify each finding against
+the current code before implementing it.
+
+Use TDD with meaningful behavioral regression tests. Preserve the
+conservative handling of uncertain remote mutations.
+
+### 1. Prevent unsafe replay during migration
+
+The Task 05A correction migration changes every legacy `superseded`
+command to `pending`.
+
+This is unsafe when a newer revision has already completed:
+
+- Revision 1 sets firstname to "Older" and is superseded.
+- Revision 2 sets firstname to "Newer" and completes.
+- The migration makes revision 1 pending.
+- Revision 1 can then overwrite the newer remote value.
+
+Do not automatically replay historical commands across a completed
+newer revision. Preserve their payloads and identity, but require
+explicit reconciliation wherever replay could regress remote state.
+Do not assume that partial payloads can safely be merged or discarded.
+
+Define and document the migration policy for legacy superseded rows,
+including cases with and without newer completed revisions.
+
+Support both installations that have not run Task 05A's migration and
+installations that have already run it. Editing an already-recorded
+migration alone is insufficient. Add a forward migration where needed.
+Do not automatically replay already-completed commands.
+
+Add regression tests for:
+- Superseded v1 plus completed v2 modifying the same field.
+- Retained disjoint partial changes without blind historical replay.
+- An installation already migrated by Task 05A.
+- Fresh installation compatibility.
+
+Assert resulting delivery behavior, not only column existence.
+
+### 2. Provide audited recovery for ambiguous updates
+
+Expired in-flight updates now become `ambiguous`, correctly blocking
+later revisions. However, the public OutboxOperator API only supports
+ambiguous-create reconciliation, while retryFailed() only accepts
+`failed` commands.
+
+Implement explicit, audited recovery for ambiguous updates.
+
+Define supported operator decisions, such as confirming that the update
+was applied or explicitly authorizing replay after reconciliation.
+Specify their prerequisites and how subsequent revisions resume.
+
+Mautic provides no remote fencing. A remote read alone cannot prove
+that an old request will not finish later. Require an explicit trusted
+operator attestation that the previous worker/request can no longer
+mutate the contact before releasing this uncertainty barrier.
+
+Do not invent an automatic quiescence check that the package cannot
+actually guarantee. Document which facts the host/operator must establish.
+
+Recovery must:
+- Preserve aggregate ordering and mapping identity.
+- Validate the current command state.
+- Be safe under concurrent/repeated operator actions.
+- Commit the state change and audit atomically.
+- Avoid allowing generic retryFailed() to bypass ambiguity handling.
+
+Keep the API focused; do not introduce a general workflow engine.
+
+Add tests for applied-update reconciliation, explicitly authorized
+replay, later-revision unblocking, invalid states, repeated/concurrent
+decisions, and audit persistence.
+
+### 3. Prevent recovery-poller starvation
+
+recoverableOperationIds() currently selects pending commands ordered
+by ID and applies its limit before excluding commands blocked behind
+unresolved earlier revisions.
+
+Example with recover(1):
+- Contact A revision 1 is ambiguous.
+- Contact A revision 2 is pending.
+- Contact B revision 1 is pending.
+- Every poll selects A revision 2, which cannot start.
+- B never gets selected.
+
+Make bounded recovery selection account for per-aggregate eligibility
+before applying the limit, or implement an equally robust bounded
+fairness strategy.
+
+Exclude commands blocked behind unresolved earlier revisions while
+retaining recovery of expired processing operations. Preserve due-time
+and connection-block checks. Apply the same ordering semantics as the
+processor.
+
+Do not solve this by removing limits, scanning the entire table in PHP,
+or relying on an ever-increasing poll limit.
+
+Add regression tests using a small limit, including:
+- An unrelated eligible contact behind blocked pending revisions.
+- Delayed, failed, and ambiguous predecessor states.
+- Expired processing recovery.
+- Progress after the predecessor is resolved.
+- Connection-level authentication blocking.
+
+Consider query/index requirements for SQLite and MariaDB.
+
+### 4. Retain a returned remote ID if its first persistence fails
+
+After transport->create() returns a remote ID, recordRemoteSuccess()
+may throw before persisting it. The outer failure handler currently
+uses the reloaded record's remoteId, which can still be null even
+though the returned ID is available locally.
+
+Retain the returned ID through this failure path. If a subsequent
+ambiguity write succeeds, persist that ID as reconciliation evidence.
+Do not convert the outcome into automatic create retry.
+
+Do not overwrite a concurrent recovery decision or attach evidence to
+the wrong operation. Continue honoring ownership/state checks.
+
+If storage remains unavailable or the process dies before evidence
+can be saved, preserve the conservative expired-operation recovery
+behavior and document that unavoidable limit.
+
+Add a fault-injection regression test where:
+- Remote creation returns a known ID.
+- The first remote-success persistence attempt fails.
+- The subsequent ambiguity persistence succeeds.
+- The command remains ambiguous with that exact remote ID.
+- Reprocessing does not send another create.
+
+Exercise this through OutboxProcessor and a real test database with a
+targeted failure mechanism, rather than testing a standalone helper.
+
+### Validation and completion
+
+Run composer check, including Pint, Larastan level 8, and Pest.
+Keep existing real multi-process shared-SQLite tests passing.
+
+Run the opt-in MariaDB fresh/upgrade tests when the existing dedicated
+test database configuration is available. Include the new forward
+migration in the applicable upgrade coverage.
+
+Keep default tests offline. No live Mautic or host integration is needed.
+Do not print or commit credentials, change vendor code, weaken checks,
+publish a release, or begin Task 06.
+
+Update the decision record, README where public recovery behavior
+changes, changelog, and .ai/STATE.md.
+
+Report:
+- The correction and regression coverage for each finding.
+- Migration behavior before and after Task 05A.
+- Operator recovery prerequisites and remaining remote limitations.
+- Checks actually executed, their results, and checks not executed.

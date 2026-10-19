@@ -18,7 +18,7 @@
   discovery and explicit host/Mautic/shared field ownership resolution.
 - Transactional outgoing contact outbox with after-commit dispatch, recovery polling,
   sequential aggregate revisions, conservative lease-expiry recovery, connection-level
-  OAuth blockers and audited ambiguous-create recovery.
+  OAuth blockers and audited ambiguous create/update recovery.
 - Pest unit/feature tests, Testbench, Pint, Larastan level 8, CI matrix.
 - Ordered implementation prompts and architecture/release/contribution guidance.
 
@@ -88,8 +88,9 @@ Task 05A replaces newer-wins supersession with strict per-aggregate sequential d
 Every lower revision must complete before a higher revision starts, preserving disjoint
 partial changes and create-before-update prerequisites. Failed, delayed, blocked and
 ambiguous commands stop the sequence until their documented operator recovery succeeds.
-The upgrade migration restores retained legacy `superseded` rows to pending and adds
-connection hashes, delivery stages and durable OAuth connection blockers.
+The 05B forward correction supersedes the original migration policy: retained legacy
+`superseded` rows require reconciliation rather than returning directly to pending.
+Connection hashes, delivery stages and durable OAuth connection blockers remain.
 
 Lease expiry is no longer treated as proof that a remote request stopped. Any expired
 in-flight operation becomes ambiguous and blocks later revisions. The configured lease
@@ -119,6 +120,38 @@ Local `composer check` passed strict Composer validation, Pint, Larastan level 8
 environment. The disposable MariaDB outbox suite then passed fresh and upgrade
 migrations with 11 assertions. No live Mautic or host application was called. Remote
 PHP/Laravel CI was not rerun because no push occurred.
+
+## Durable outgoing synchronization recovery correction — 2026-10-19
+
+Task 05B prevents historical regressions by retaining legacy superseded payloads as
+`ambiguous` instead of replaying them. The new forward migration also repairs hosts that
+already ran the earlier 05A conversion: identifiable pending lower revisions with a
+higher stored revision move behind the explicit reconciliation barrier, while completed
+commands remain completed. Fresh installations carry a migration-policy marker from
+their initial schema.
+
+Ambiguous updates now have two focused operator decisions: confirm the revision applied,
+or explicitly authorize replay. Both require an active matching contact mapping and a
+trusted attestation that the previous worker/request cannot mutate Mautic again. A remote
+read alone is insufficient. State and audit commit atomically, competing/repeated choices
+fail conditionally, and `retryFailed()` cannot bypass the ambiguity barrier.
+
+The bounded poller selects only the lowest unresolved revision per aggregate before its
+limit and connection-block filtering, avoiding starvation while retaining expired-worker
+recovery. When create returns an ID and its first evidence write fails, the processor now
+carries that exact ID into the owned ambiguity transition. If storage stays unavailable
+or the process dies first, expiry remains the conservative fallback.
+
+Focused SQLite tests cover old and fresh migration paths, same-field and disjoint legacy
+payloads, applied/replay update decisions, atomic audit rollback, blocked aggregate
+fairness, expired processing, connection blocks and targeted database failure after a
+known create ID. The existing concurrency tests still use separate PHP processes over a
+shared file-backed SQLite database, not an in-memory fake. Local `composer check` passed
+strict Composer validation, Pint, Larastan level 8 and 153 tests / 634 assertions; the
+three opt-in database tests were skipped in the default offline run. The disposable
+MariaDB outbox suite then passed its fresh, pre-05A and already-ran-05A upgrade coverage
+with 14 assertions. No live Mautic or host application was called, and remote CI was not
+rerun because no push occurred.
 
 ## Contact identity correction — 2026-10-19
 

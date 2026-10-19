@@ -294,22 +294,30 @@ delivery.
 
 A create 5xx, transport uncertainty, or local persistence failure after remote success
 is an `ambiguous` command and is never automatically repeated. The returned remote ID
-is retained as recovery evidence when available. An operator must use
+is retained as recovery evidence when available, including when its first persistence
+attempt fails but the subsequent ambiguity write succeeds. An operator must use
 `OutboxOperator::reconcileCreated()` with the verified remote ID, or
 `confirmCreateAbsentAndRetry()` only after proving that no remote contact was created.
-Both decisions are audited. Failed rows are retained, and `retryFailed()` records its
-actor and reason code. Stored diagnostics contain package-owned classifications rather
-than upstream messages or credentials. The outbox does not reset consent, remove DNC,
-send mail, delete contacts or serialize whole models.
+For an ambiguous update, the host must first establish that the old worker and request
+cannot mutate Mautic again; a remote read alone is not proof. It then passes that trusted
+attestation explicitly to `confirmAmbiguousUpdateApplied()` or
+`authorizeAmbiguousUpdateReplay()`. The first completes the barrier; the second returns
+the same immutable revision to pending delivery. Both require the active mapping, and
+all decisions are audited atomically with their state change. Failed rows are retained,
+and `retryFailed()` cannot bypass ambiguity handling. Stored diagnostics contain
+package-owned classifications rather than upstream messages or credentials.
 
 SQLite and MariaDB behavior, crash boundaries and limitations are recorded in
 [docs/decisions/002-outbox-delivery.md](docs/decisions/002-outbox-delivery.md).
 
-Hosts that published the initial development outbox migration must also publish and run
-the `2026_10_19_021000_correct_mautic_contact_outbox` migration. It backfills connection
-identity hashes and delivery stages, restores previously superseded retained commands to
-pending, and adds durable connection blockers. The correction is intentionally
-irreversible because removing that recovery metadata would make delivery unsafe.
+Hosts that published an earlier development outbox migration must republish and run both
+the `2026_10_19_021000_correct_mautic_contact_outbox` and
+`2026_10_19_022000_reconcile_legacy_mautic_contact_outbox` migrations. Legacy
+`superseded` rows are retained as `ambiguous`, never blindly replayed, whether or not a
+newer revision completed. The forward migration also detects installations where the old
+05A migration already made an identifiable lower historical revision pending and moves
+it behind the same explicit reconciliation barrier. Completed commands remain completed.
+These corrections are intentionally irreversible.
 
 ## Normalized contact reads
 

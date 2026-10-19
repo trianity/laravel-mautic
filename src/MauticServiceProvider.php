@@ -171,6 +171,7 @@ final class MauticServiceProvider extends ServiceProvider
             $outboxMigration = [
                 __DIR__.'/../database/migrations/create_mautic_contact_outbox.php.stub' => database_path('migrations/2026_10_19_020000_create_mautic_contact_outbox.php'),
                 __DIR__.'/../database/migrations/correct_mautic_contact_outbox.php.stub' => database_path('migrations/2026_10_19_021000_correct_mautic_contact_outbox.php'),
+                __DIR__.'/../database/migrations/reconcile_legacy_mautic_contact_outbox.php.stub' => database_path('migrations/2026_10_19_022000_reconcile_legacy_mautic_contact_outbox.php'),
             ];
             $this->publishes($outboxMigration, 'mautic-migrations');
             $this->publishes($outboxMigration, 'mautic-outbox-migrations');

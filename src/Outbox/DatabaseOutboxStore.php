@@ -8,6 +8,7 @@ use Illuminate\Database\Connection;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Database\ConnectionResolverInterface;
 use Illuminate\Database\Query\Builder;
+use Illuminate\Database\Query\JoinClause;
 use Illuminate\Database\QueryException;
 use RuntimeException;
 use Trianity\LaravelMautic\Contracts\Clock;
@@ -99,26 +100,38 @@ final readonly class DatabaseOutboxStore
             throw new RuntimeException('The outbox recovery limit must be between 1 and 1000.');
         }
         $now = $this->clock->now();
+        $unresolvedHeads = $this->database()->table($this->commandsTable)
+            ->select('aggregate_hash')
+            ->selectRaw('MIN(revision) as first_revision')
+            ->where('status', '!=', OutboxStatus::Completed->value)
+            ->groupBy('aggregate_hash');
         $rows = $this->database()->table($this->commandsTable)
+            ->joinSub($unresolvedHeads, 'outbox_heads', function (JoinClause $join): void {
+                $join->on($this->commandsTable.'.aggregate_hash', '=', 'outbox_heads.aggregate_hash')
+                    ->on($this->commandsTable.'.revision', '=', 'outbox_heads.first_revision');
+            })
+            ->leftJoin($this->connectionBlocksTable, function (JoinClause $join): void {
+                $join->on(
+                    $this->connectionBlocksTable.'.connection_hash',
+                    '=',
+                    $this->commandsTable.'.connection_hash',
+                );
+            })
             ->where(function ($query) use ($now): void {
-                $query->where('status', OutboxStatus::Pending->value)
+                $query->where($this->commandsTable.'.status', OutboxStatus::Pending->value)
                     ->orWhere(function ($query) use ($now): void {
-                        $query->where('status', OutboxStatus::RetryWait->value)
-                            ->where('next_attempt_at', '<=', $now);
+                        $query->where($this->commandsTable.'.status', OutboxStatus::RetryWait->value)
+                            ->where($this->commandsTable.'.next_attempt_at', '<=', $now);
                     })
                     ->orWhere(function ($query) use ($now): void {
-                        $query->where('status', OutboxStatus::Processing->value)
-                            ->where('lease_expires_at', '<=', $now);
+                        $query->where($this->commandsTable.'.status', OutboxStatus::Processing->value)
+                            ->where($this->commandsTable.'.lease_expires_at', '<=', $now);
                     });
             })
-            ->whereNotExists(function ($query): void {
-                $query->selectRaw('1')
-                    ->from($this->connectionBlocksTable)
-                    ->whereColumn($this->connectionBlocksTable.'.connection_hash', $this->commandsTable.'.connection_hash');
-            })
-            ->orderBy('id')
+            ->whereNull($this->connectionBlocksTable.'.connection_hash')
+            ->orderBy($this->commandsTable.'.id')
             ->limit($limit)
-            ->pluck('operation_id');
+            ->pluck($this->commandsTable.'.operation_id');
 
         return array_values(array_filter($rows->all(), is_string(...)));
     }
@@ -351,6 +364,7 @@ final readonly class DatabaseOutboxStore
             $updated = $this->database()->table($this->commandsTable)
                 ->where('operation_id', $operationId)
                 ->where('status', OutboxStatus::Ambiguous->value)
+                ->where('operation', OutboxOperation::Create->value)
                 ->update([
                     'status' => OutboxStatus::Completed->value,
                     'remote_id' => $remoteId,
@@ -367,6 +381,58 @@ final readonly class DatabaseOutboxStore
                 throw new RuntimeException('Only an ambiguous outbox command may be reconciled.');
             }
             $this->audit($operationId, 'reconcile_remote', $actor, $reasonCode);
+        });
+    }
+
+    public function operatorCompleteUpdate(string $operationId, int $remoteId, string $actor, string $reasonCode): void
+    {
+        $this->database()->transaction(function () use ($operationId, $remoteId, $actor, $reasonCode): void {
+            $updated = $this->database()->table($this->commandsTable)
+                ->where('operation_id', $operationId)
+                ->where('operation', OutboxOperation::Update->value)
+                ->where('status', OutboxStatus::Ambiguous->value)
+                ->update([
+                    'status' => OutboxStatus::Completed->value,
+                    'remote_id' => $remoteId,
+                    'delivery_stage' => OutboxDeliveryStage::RemoteSucceeded->value,
+                    'completed_at' => $this->clock->now(),
+                    'lease_owner' => null,
+                    'lease_expires_at' => null,
+                    'last_failure_kind' => null,
+                    'last_http_status' => null,
+                    'last_error_code' => null,
+                    'updated_at' => $this->timestamp(),
+                ]);
+            if ($updated !== 1) {
+                throw new RuntimeException('Only an ambiguous update may be confirmed as applied.');
+            }
+            $this->audit($operationId, 'confirm_update_applied', $actor, $reasonCode);
+        });
+    }
+
+    public function operatorReplayUpdate(string $operationId, int $remoteId, string $actor, string $reasonCode): void
+    {
+        $this->database()->transaction(function () use ($operationId, $remoteId, $actor, $reasonCode): void {
+            $updated = $this->database()->table($this->commandsTable)
+                ->where('operation_id', $operationId)
+                ->where('operation', OutboxOperation::Update->value)
+                ->where('status', OutboxStatus::Ambiguous->value)
+                ->update([
+                    'status' => OutboxStatus::Pending->value,
+                    'remote_id' => $remoteId,
+                    'delivery_stage' => OutboxDeliveryStage::Recorded->value,
+                    'next_attempt_at' => null,
+                    'lease_owner' => null,
+                    'lease_expires_at' => null,
+                    'last_failure_kind' => null,
+                    'last_http_status' => null,
+                    'last_error_code' => null,
+                    'updated_at' => $this->timestamp(),
+                ]);
+            if ($updated !== 1) {
+                throw new RuntimeException('Only an ambiguous update may be authorized for replay.');
+            }
+            $this->audit($operationId, 'authorize_update_replay', $actor, $reasonCode);
         });
     }
 

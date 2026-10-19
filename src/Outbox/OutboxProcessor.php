@@ -51,6 +51,7 @@ final readonly class OutboxProcessor
         if (! $this->store->acquire($initial->aggregateHash, $owner, $this->leaseSeconds)) {
             return;
         }
+        $remoteId = null;
 
         try {
             $current = $this->store->get($operationId);
@@ -161,7 +162,7 @@ final readonly class OutboxProcessor
                     $operationId,
                     $owner,
                     'local_completion_uncertain',
-                    $record->remoteId,
+                    $remoteId ?? $record->remoteId,
                 );
             }
 

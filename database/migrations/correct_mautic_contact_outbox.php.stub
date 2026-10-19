@@ -47,15 +47,22 @@ return new class extends Migration
             ]);
         }
 
+        if (! $schema->hasColumn($commands, 'legacy_recovery')) {
+            $schema->table($commands, function (Blueprint $table): void {
+                $table->string('legacy_recovery', 32)->nullable()->after('delivery_stage');
+            });
+        }
+
         DB::connection($connection)->table($commands)->where('status', 'superseded')->update([
-            'status' => 'pending',
+            'status' => 'ambiguous',
             'delivery_stage' => 'recorded',
+            'legacy_recovery' => 'superseded',
             'next_attempt_at' => null,
             'lease_owner' => null,
             'lease_expires_at' => null,
-            'last_failure_kind' => null,
+            'last_failure_kind' => 'ambiguous_outcome',
             'last_http_status' => null,
-            'last_error_code' => null,
+            'last_error_code' => 'legacy_superseded_reconciliation_required',
         ]);
 
         if (! $schema->hasTable($blocks)) {

@@ -46,6 +46,7 @@ it('runs the published outbox migration and shared lease contract on disposable 
             ->assertSuccessful();
         (require database_path('migrations/2026_10_19_020000_create_mautic_contact_outbox.php'))->up();
         (require database_path('migrations/2026_10_19_021000_correct_mautic_contact_outbox.php'))->up();
+        (require database_path('migrations/2026_10_19_022000_reconcile_legacy_mautic_contact_outbox.php'))->up();
         $clock = new class implements Clock
         {
             public function now(): int
@@ -151,12 +152,53 @@ it('upgrades the earlier outbox schema on disposable MariaDB', function () {
         $this->artisan('vendor:publish', ['--tag' => 'mautic-outbox-migrations', '--force' => true])
             ->assertSuccessful();
         (require database_path('migrations/2026_10_19_021000_correct_mautic_contact_outbox.php'))->up();
+        (require database_path('migrations/2026_10_19_022000_reconcile_legacy_mautic_contact_outbox.php'))->up();
         $row = DB::connection('outbox-mariadb')->table('mautic_outbox_commands')->first();
 
         expect($row?->connection_hash)->toBe(ContactIdentityHasher::connection('Main'))
             ->and($row?->delivery_stage)->toBe('recorded')
-            ->and($row?->status)->toBe('pending')
+            ->and($row?->status)->toBe('ambiguous')
+            ->and($row?->last_error_code)->toBe('legacy_superseded_reconciliation_required')
             ->and($schema->hasTable('mautic_outbox_connection_blocks'))->toBeTrue();
+
+        foreach (['mautic_outbox_connection_blocks', 'mautic_outbox_audits', 'mautic_outbox_locks', 'mautic_outbox_commands'] as $table) {
+            $schema->dropIfExists($table);
+        }
+        (require database_path('migrations/2026_10_19_020000_create_mautic_contact_outbox.php'))->up();
+        $schema->table('mautic_outbox_commands', function (Blueprint $table): void {
+            $table->dropColumn('legacy_recovery');
+        });
+        $base = [
+            'connection' => 'Main',
+            'connection_hash' => ContactIdentityHasher::connection('Main'),
+            'local_scope' => 'tenant:acme',
+            'local_key' => 'contact-2',
+            'aggregate_hash' => str_repeat('b', 64),
+            'operation' => 'update',
+            'source' => 'host',
+            'attempts' => 0,
+            'delivery_stage' => 'recorded',
+            'created_at' => '2026-10-19 10:00:00',
+            'updated_at' => '2026-10-19 10:00:00',
+        ];
+        DB::connection('outbox-mariadb')->table('mautic_outbox_commands')->insert($base + [
+            'operation_id' => 'old-05a-v1',
+            'revision' => 1,
+            'payload' => '{"firstname":"Older"}',
+            'status' => 'pending',
+        ]);
+        DB::connection('outbox-mariadb')->table('mautic_outbox_commands')->insert($base + [
+            'operation_id' => 'old-05a-v2',
+            'revision' => 2,
+            'payload' => '{"firstname":"Newer"}',
+            'status' => 'completed',
+        ]);
+        (require database_path('migrations/2026_10_19_022000_reconcile_legacy_mautic_contact_outbox.php'))->up();
+
+        expect(DB::connection('outbox-mariadb')->table('mautic_outbox_commands')
+            ->where('operation_id', 'old-05a-v1')->value('status'))->toBe('ambiguous')
+            ->and(DB::connection('outbox-mariadb')->table('mautic_outbox_commands')
+                ->where('operation_id', 'old-05a-v2')->value('status'))->toBe('completed');
     } finally {
         foreach (['mautic_outbox_connection_blocks', 'mautic_outbox_audits', 'mautic_outbox_locks', 'mautic_outbox_commands'] as $table) {
             $schema->dropIfExists($table);

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for Task 05 and corrected by Task 05A.
+Accepted for Task 05 and corrected by Tasks 05A and 05B.
 
 ## Transaction and dispatch boundary
 
@@ -27,8 +27,18 @@ revision: a command may start only after every lower stored revision completed. 
 field changes are not coalesced or discarded, and create-before-update is an explicit
 prerequisite. Pending, delayed, failed, blocked and ambiguous lower revisions all block
 later work. The operator must retry or reconcile that lower command before the sequence
-can continue. The correction migration restores rows that the earlier implementation
-marked `superseded` to `pending` so their retained payloads are not lost.
+can continue. Recovery polling computes the lowest unresolved revision per aggregate
+before applying its bounded limit, so a blocked aggregate cannot starve unrelated work.
+The existing unique `(aggregate_hash, revision)` index supports this grouped head query;
+the status/due-time and connection/status indexes support its remaining filters.
+
+Legacy `superseded` rows retain their immutable payload and identity but migrate to
+`ambiguous`, regardless of whether a newer revision completed. Neither same-field nor
+disjoint partial payloads are inferred safe for replay. The forward migration also
+repairs installations that already ran the unsafe 05A conversion: because that version
+left no row marker, a pending lower revision with any higher stored revision is
+conservatively marked as legacy ambiguity. Completed rows are never reactivated. An
+operator must reconcile or explicitly authorize each historical replay.
 
 The lease must exceed the host-declared complete-operation budget, which must cover each
 individual request timeout. This sizing reduces expected expiry but is not remote
@@ -52,9 +62,11 @@ responses are ambiguous and never retried automatically.
 
 After a create returns, its remote ID and `remote_succeeded` stage are persisted before
 claiming the mapping. Mapping or later local-persistence failure retains that ID as
-reconciliation evidence when storage remains available. If even outcome persistence
-fails, the row remains `processing`; expiry applies the same conservative ambiguity
-protocol. `retryFailed()` cannot retry an ambiguous create.
+reconciliation evidence when storage remains available. If the first evidence write
+fails, the processor carries the returned ID into its owned ambiguity transition. If
+storage remains unavailable or the process dies first, the row remains `processing`;
+expiry applies the same conservative ambiguity protocol. This unavoidable crash window
+is not an automatic-retry signal. `retryFailed()` cannot retry ambiguity.
 
 OAuth token persistence uncertainty and reauthorization requirements create a durable,
 byte-exact connection block. Other pending commands on that connection do not start.
@@ -69,12 +81,21 @@ retry is permitted only for terminal non-ambiguous failures. An ambiguous create
 an explicit audited reconciliation decision: claim the discovered remote ID and finish,
 or confirm absence before making it pending again.
 
+An ambiguous update has two focused decisions: confirm that it was applied, completing
+the revision, or authorize replay of the same retained command. Both require an active,
+matching contact mapping and an explicit trusted operator attestation that the previous
+worker/request has terminated or otherwise cannot mutate Mautic. Observing the desired
+remote values is insufficient because Mautic supplies no request fence. State and audit
+commit in one database transaction; conditional transitions make repeated or competing
+decisions fail without a second audit. Later revisions resume only after the reconciled
+revision completes (immediately for confirmation, after delivery for replay).
+
 ## Database support
 
 SQLite tests prove transactional recording, dispatch-gap recovery and lease state
 transitions. Separate PHP processes share one file-backed SQLite database for both the
 duplicate-worker test and the controlled in-flight lease-expiry test; these are not
 memory fakes. SQLite still serializes writes and does not reproduce InnoDB row-lock
-scheduling. The opt-in disposable MariaDB suite verifies both fresh and Task 05 upgrade
-migrations. Production hosts must run workers against a shared durable database; an
-in-memory repository or process-local mutex is insufficient.
+scheduling. The opt-in disposable MariaDB suite verifies fresh and upgrade migrations,
+including the 05B forward migration. Production hosts must run workers against a shared
+durable database; an in-memory repository or process-local mutex is insufficient.

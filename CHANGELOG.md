@@ -33,6 +33,7 @@
   shared aggregate leases, revision ordering and retained sanitized outcomes.
 - Audited operator recovery for ambiguous creates and failed commands, with bounded
   retry policy and numeric `Retry-After` propagation.
+- Attested, audited ambiguous-update confirmation and replay authorization.
 
 ### Fixed
 
@@ -44,6 +45,8 @@
   `Retry-After` values as minimum delays rather than capping them to local backoff.
 - Avoid uninitialized or stale upstream SDK response headers after transport failures.
 - Add a published outbox correction migration for existing Task 05 installations.
+- Prevent blind replay of legacy superseded revisions, avoid bounded-poller starvation,
+  and retain locally returned create IDs when their first evidence write fails.
 
 - Enforce byte-exact contact identities with collation-independent tuple hashes,
   original-value verification and an explicit validating upgrade migration.

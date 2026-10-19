@@ -28,6 +28,7 @@ return new class extends Migration
             $table->string('status', 24);
             $table->unsignedInteger('attempts')->default(0);
             $table->string('delivery_stage', 32)->default('recorded');
+            $table->string('legacy_recovery', 32)->nullable();
             $table->unsignedBigInteger('next_attempt_at')->nullable();
             $table->string('lease_owner', 64)->nullable();
             $table->unsignedBigInteger('lease_expires_at')->nullable();

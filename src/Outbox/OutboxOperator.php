@@ -6,6 +6,7 @@ namespace Trianity\LaravelMautic\Outbox;
 
 use RuntimeException;
 use Trianity\LaravelMautic\Contracts\ContactMappingRepository;
+use Trianity\LaravelMautic\Identity\RemoteContactState;
 
 final readonly class OutboxOperator
 {
@@ -42,6 +43,40 @@ final readonly class OutboxOperator
         $this->store->operatorRetry($operationId, $actor, $reasonCode, false);
     }
 
+    public function confirmAmbiguousUpdateApplied(
+        string $operationId,
+        string $actor,
+        string $reasonCode,
+        bool $previousRequestCannotMutate,
+    ): void {
+        $record = $this->ambiguousUpdate($operationId, $actor, $reasonCode, $previousRequestCannotMutate);
+        $mapping = $this->mappings->find($record->connection, $record->localReference);
+        if ($mapping === null || $mapping->remoteState !== RemoteContactState::Active) {
+            throw new RuntimeException('An ambiguous update requires its active contact mapping.');
+        }
+        if ($record->remoteId !== null && $record->remoteId !== $mapping->remoteId) {
+            throw new RuntimeException('The ambiguous update evidence does not match its active contact mapping.');
+        }
+        $this->store->operatorCompleteUpdate($operationId, $mapping->remoteId, $actor, $reasonCode);
+    }
+
+    public function authorizeAmbiguousUpdateReplay(
+        string $operationId,
+        string $actor,
+        string $reasonCode,
+        bool $previousRequestCannotMutate,
+    ): void {
+        $record = $this->ambiguousUpdate($operationId, $actor, $reasonCode, $previousRequestCannotMutate);
+        $mapping = $this->mappings->find($record->connection, $record->localReference);
+        if ($mapping === null || $mapping->remoteState !== RemoteContactState::Active) {
+            throw new RuntimeException('An ambiguous update requires its active contact mapping.');
+        }
+        if ($record->remoteId !== null && $record->remoteId !== $mapping->remoteId) {
+            throw new RuntimeException('The ambiguous update evidence does not match its active contact mapping.');
+        }
+        $this->store->operatorReplayUpdate($operationId, $mapping->remoteId, $actor, $reasonCode);
+    }
+
     public function resumeAuthentication(string $connection, string $actor, string $reasonCode): void
     {
         $this->validateAudit($actor, $reasonCode);
@@ -56,5 +91,24 @@ final readonly class OutboxOperator
         if (trim($actor) === '' || strlen($actor) > 64 || trim($reasonCode) === '' || strlen($reasonCode) > 64) {
             throw new RuntimeException('Operator actor and reason code are required bounded audit values.');
         }
+    }
+
+    private function ambiguousUpdate(
+        string $operationId,
+        string $actor,
+        string $reasonCode,
+        bool $previousRequestCannotMutate,
+    ): OutboxRecord {
+        $this->validateAudit($actor, $reasonCode);
+        if (! $previousRequestCannotMutate) {
+            throw new RuntimeException('Recovery requires trusted attestation that the previous request cannot mutate the contact.');
+        }
+        $record = $this->store->get($operationId);
+        if ($record === null || $record->operation !== OutboxOperation::Update
+            || $record->status !== OutboxStatus::Ambiguous) {
+            throw new RuntimeException('Only an ambiguous update may use update recovery.');
+        }
+
+        return $record;
     }
 }
