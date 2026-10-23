@@ -14,6 +14,8 @@ enum MutationOperation: string
     case UpdateContactsBatch = 'update_contacts_batch';
     case AddContactToSegment = 'add_contact_to_segment';
     case RemoveContactFromSegment = 'remove_contact_from_segment';
+    case BlockContactEmail = 'block_contact_email';
+    case ReleaseContactEmailRestriction = 'release_contact_email_restriction';
 
     public function safety(): OperationSafety
     {

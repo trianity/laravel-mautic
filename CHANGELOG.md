@@ -52,6 +52,10 @@
   mapping, preserved unknown values and explicit unavailable bounce-subtype evidence.
 - A separately gated, metadata-preflighted OAuth custom-field lifecycle probe and a
   design for atomic, independently owned administrative restrictions.
+- Typed manual email restriction commands with stable diagnostic timestamps, verified
+  resulting-state outcomes and explicit stock channel-level release semantics.
+- A separately gated OAuth restriction-write acceptance suite with isolated disposable
+  scenarios, bounded fallback reads, exact ownership cleanup and sanitized evidence.
 
 ### Fixed
 
@@ -99,4 +103,4 @@
   root/API URLs for root and subdirectory installations.
 
 No stable release, Packagist publication, automatic webhook route, remote deletion or
-general DNC-removal API is included. OAuth2 client-credentials is not implemented.
+generic multi-channel DNC API is included. OAuth2 client-credentials is not implemented.

@@ -115,16 +115,25 @@ typed while unknown values remain intact. A reason-2 row proves a bounce restric
 not hard/soft subtype; the current REST adapter exposes no attributable subtype/history,
 so that capability is explicitly unavailable. Generic fields never carry DNC commands.
 
-Host-owned administrative restriction writes require independent durable ownership and
-remote atomic compare-and-set semantics. Mautic's stock channel-only removal cannot safely
-release one owner while preserving concurrent unsubscribe, bounce and administrative
-blocks. No public mutation API is exposed until the minimal extension contract in
-`docs/decisions/005-host-owned-administrative-restrictions.md` is implemented and proven.
+Explicit restriction writes are separate from generic fields. The public email-only API
+sets Mautic's manual DNC reason and exposes the verified resulting state; when a mutation
+response cannot establish that state, it performs at most one bounded contact read. The
+command object captures its diagnostic `recorded_at` value once. Mutation transport
+ambiguity is never replayed automatically, and a post-mutation verification failure does
+not claim that the write did not occur.
+
+Release accepts the stock API's contact-and-channel semantics. It has no owner, reason,
+record-ID or version condition, and the Mautic implementation removes one selected
+matching row rather than promising removal of every possible restriction. A preflight
+read cannot make this atomic. Release therefore never implies consent or permission to
+send, and callers must inspect whether a restriction remains. Independent ownership,
+durable restriction delivery and conditional release are deferred as described in
+`docs/decisions/005-host-owned-administrative-restrictions.md`.
 
 The implemented segment commands use only manual add/remove endpoints. They do not
 change fields, consent, DNC or mail state. Dynamic filter evaluation is asynchronous;
 manual removal may be represented as an exclusion until explicitly re-added. Remote
-deletion and general DNC removal are not exposed.
+deletion and generic multi-channel DNC operations are not exposed.
 
 ## Reliable outgoing delivery
 

@@ -46,7 +46,8 @@ to this package's installed `mautic/api-library` 4.0.0.
 | DNC ID/channel/reason/date/channel ID/comments | Implemented, offline-tested | Typed optionals preserve missing, null and values; malformed payloads fail. |
 | Known/unknown DNC reasons | Implemented, offline-tested | Known constants map to an enum; raw unknown values remain available. |
 | Bounce restriction subtype/history | Unsupported by current API | DNC reason 2 yields explicit `SubtypeUnavailable`; unknown evidence yields `Unavailable`. |
-| Safe host-owned administrative writes | Planned; extension required | Decision 005 specifies owned independent restrictions and atomic conditional release/reset. |
+| Stock manual email block/channel release | Implemented and separately live-verified | Typed outcomes expose actual channel-level semantics; see the restriction-write report. |
+| Independently host-owned conditional release | Deferred | Decision 005 preserves the stronger possible design without making a plugin a prerequisite. |
 
 ## Live custom-field prerequisite
 

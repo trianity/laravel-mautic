@@ -1,70 +1,67 @@
-# Decision 005: host-owned administrative delivery restrictions
+# Decision 005: stock administrative delivery restrictions
 
 ## Status
 
-Proposed for the follow-up implementation after Task 07G. Task 07G exposes reads only;
-it intentionally adds no DNC mutation contract.
+Accepted for the current product scope. Independent host-owned restrictions and a
+Mautic extension are deferred; the extension is not a prerequisite for the public
+restriction-write API.
 
-## Why the stock API is insufficient
+## Decision
 
-Mautic 7.2.1 stores DNC rows per contact and channel, but adding a different reason can
-update the existing row for that channel. Its stock remove endpoint accepts only contact
-and channel and performs an unconditional channel removal. `MANUAL` and free-text
-comments identify neither an owner nor a particular command. A host read followed by
-that removal is a time-of-check/time-of-use race: Mautic or another administrator may
-replace the row between the read and delete. Deleting first and recreating unrelated
-restrictions is also unsafe and can transiently permit delivery, lose provenance, or
-overwrite concurrent work.
+The stock Mautic REST API is sufficient for the currently accepted, explicit
+administrative operations:
 
-Therefore `releaseHostBlock` and bounce reset cannot be implemented safely through the
-stock endpoint. A reason match, comments marker, or saved DNC snapshot is not sufficient
-ownership evidence.
+- set the contact's email-channel DNC state to the manual reason through
+  `POST /api/contacts/{id}/dnc/email/add`; and
+- explicitly release a restriction through
+  `POST /api/contacts/{id}/dnc/email/remove`.
 
-## Smallest safe model
+The package names these operations `blockEmail` and `releaseEmailRestriction`. The
+release name deliberately does not imply host ownership. Both are immediate commands;
+they are not automatic model synchronization and are not delivered through the contact
+outbox.
 
-Each administrative restriction is an independent record with a durable owner tuple:
-named connection, remote contact ID, channel, host installation UUID, host restriction
-UUID, and monotonically increasing command revision. The record also carries reason,
-sanitized operator explanation, remote revision/token, creation and change timestamps,
-and the last applied idempotency key. The effective suppression state is the logical OR
-of all active restrictions. Releasing one host restriction removes only that record and
-does not imply consent, contactability, subscription, or permission to send.
+The block command carries a required human explanation and a stable UTC
+`recorded_at` marker. The marker is diagnostic only. It is not an ownership credential,
+remote idempotency key, Mautic `dateAdded` value or conditional-write token. Mautic may
+sanitize the submitted comments, so callers inspect the normalized resulting state and
+the explicit exact-comments observation instead of assuming byte-exact storage.
 
-The package should store a connection-scoped command and audit record before delivery.
-Block and release commands use a stable idempotency key derived from restriction identity
-and revision. A newer durable revision supersedes older pending work, so a delayed block
-cannot override a later release. Workers serialize one restriction aggregate, retain
-attempts and sanitized outcomes, and never automatically retry an ambiguous side effect.
-Retry after an unambiguous transient failure reuses the same idempotency key; an ambiguous
-outcome requires an authoritative conditional read before any replay.
+## Accepted stock-API semantics
 
-Bounce reset is a separate administrator-authorized command targeting explicit bounce
-evidence. It must never release an unsubscribe, another administrative restriction, or a
-different host's block. Every command checks host permission and exact connection/tenant
-scope before revealing or changing state. Logs and routine diagnostics exclude contact
-addresses, raw comments, tokens, credentials, and unrestricted payloads.
+Mautic 7.2.1 represents the effective DNC state by contact and channel. Adding a
+different reason can update the existing row, while adding the same manual reason may
+retain its original metadata. An existing unsubscribe is not replaced by a manual
+reason. The remove endpoint accepts only contact and channel; it has no expected reason,
+record ID, owner or version condition. Its implementation removes one selected matching
+row and therefore is not a promise that every independently represented restriction for
+that channel was removed.
 
-## Required minimal Mautic extension
+The package verifies the state embedded in the mutation response and performs at most
+one explicit read when that embedded contact cannot establish the result. It reports
+the observed outcome, including a retained pre-existing restriction, a remaining
+restriction, or no matching restriction. A verification failure after a successful
+request remains distinct from proof that no mutation occurred. Side-effectful commands
+are never automatically retried, and repeated calls are not proof of remote exactly-once
+processing.
 
-A narrowly scoped Mautic-side extension must expose independent restriction resources,
-not channel-wide replacement semantics. It must provide:
+A preflight read would not make a subsequent write atomic, so it is not used as an
+ownership check. Channel-level release may affect an unsubscribe, bounce or
+administrative restriction. Successful release does not establish consent,
+subscription, contactability or permission to send. Hosts must authorize the operation
+and make any required consent decision independently.
 
-- create-or-confirm by `(host installation UUID, restriction UUID, revision)` with an
-  idempotency key and a returned immutable restriction ID plus revision token;
-- list/read of restriction ID, owner identity, channel, reason, active state and revision
-  under normal Mautic contact permissions;
-- conditional release of exactly one owned restriction using its immutable ID, owner
-  tuple and expected revision/token in one atomic transaction;
-- conditional bounce reset using an explicit bounce restriction/evidence ID and expected
-  revision, never a channel-only delete;
-- conflict responses when a record was changed, replaced or deactivated after the host's
-  observation, and stable replay responses for an already-applied idempotency key;
-- an append-only Mautic audit containing actor, owner, command revision and outcome while
-  keeping explanations out of ownership decisions.
+## Deferred stronger ownership model
 
-If Mautic or another administrator changes or replaces a restriction, a stale conditional
-command fails without changing the replacement. If the extension cannot retain multiple
-independent active restrictions, it must maintain an equivalent ownership ledger and
-atomically recompute the combined DNC projection; it must never expose a window where one
-remaining restriction is ineffective. The host package may add public administrative
-write methods only after this atomic contract has live acceptance evidence.
+Some applications may later require several independently owned restrictions, durable
+command delivery or conditional release of exactly one host-owned record. The stock API
+cannot provide those guarantees: free-text comments, a reason match and a saved DNC
+snapshot are not ownership evidence, and read-then-remove has a time-of-check/time-of-use
+race.
+
+A future Mautic extension could expose immutable restriction IDs, owner tuples,
+revisions, idempotency keys, conditional release and an append-only audit. Alternatively,
+an equivalent Mautic-side ownership ledger would need to recompute the effective DNC
+projection atomically without briefly disabling a remaining restriction. This design is
+preserved as a possible future capability, not presented as implemented and not a
+current blocker.

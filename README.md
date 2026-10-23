@@ -7,7 +7,7 @@ MIT licensed; intended for publication as `trianity/laravel-mautic` on Packagist
 
 **Status: development package, no stable release yet.** Basic Auth and opt-in OAuth2
 connections, normalized contact reads, explicit contact writes, manual segment
-commands, durable identity mappings, field ownership rules, transactional outgoing
+commands, explicit email-restriction commands, durable identity mappings, field ownership rules, transactional outgoing
 synchronization, a verified webhook inbox and raw upstream contexts are implemented.
 Bounded reconciliation and connection diagnostics are implemented. No real Mautic
 server compatibility is claimed until the corresponding opt-in live probes pass.
@@ -716,7 +716,42 @@ Each DNC entry exposes optional `remoteId`, `reason`, `dateAdded`, `channelId` a
 to `DoNotContactReason`; unknown raw values remain available. `bounceEvidence()` returns
 `SubtypeUnavailable` for reason 2 because the supported contact API exposes no reliable
 hard/soft subtype or history. Missing/null DNC data is never converted into an empty,
-contactable result. Administrative DNC writes remain unsupported; see
+contactable result.
+
+Manual email blocks and explicit channel-level release are separate from generic
+contact fields:
+
+```php
+use Trianity\LaravelMautic\Contracts\Clock;
+use Trianity\LaravelMautic\Restriction\ManualEmailBlock;
+
+$connection = $manager->connection('main');
+$block = ManualEmailBlock::record(
+    explanation: 'Requested by the support operator under ticket 1842.',
+    clock: app(Clock::class),
+);
+
+$blocked = $connection->restrictionWrites()->blockEmail($mauticContactId, $block);
+$inspected = $connection->contactReads()->find($mauticContactId);
+$released = $connection->restrictionWrites()->releaseEmailRestriction($mauticContactId);
+```
+
+The host supplies the non-empty human explanation. `ManualEmailBlock::record()` captures
+one UTC timestamp and appends a marker such as
+`[trianity/laravel-mautic; recorded_at=2026-10-23T15:30:00Z]`; reusing that object retains
+the same explanation and timestamp. The marker is diagnostic, not ownership evidence or
+a remote idempotency key. Mautic may sanitize comments—7.2.1 encoded submitted line feeds
+as `&#10;`—so `submittedCommentsObserved` reports byte-exact observation separately from
+the resulting restriction outcome. A retained pre-existing restriction means the request
+succeeded but the verified email state did not become the submitted manual block.
+
+`releaseEmailRestriction()` targets the contact and email channel. It does not select a
+host-owned row or require an expected reason/version, and it may affect an unsubscribe,
+bounce or administrative restriction. `Released`, `RestrictionRemains` and
+`NoMatchingRestriction` describe the returned and, when needed, explicitly re-read state;
+successful release never establishes consent or permission to send. Missing `dateAdded`
+remains unavailable. These immediate commands are not automatic host-model
+synchronization, durable delivery or exactly-once processing. See
 [Decision 005](docs/decisions/005-host-owned-administrative-restrictions.md).
 
 An independently configured manual restriction can be checked without mutation by
@@ -803,8 +838,9 @@ interpolating it into Mautic's search-command grammar.
 
 Mutations are side-effectful and not automatically retried. A timeout or connection
 loss during creation produces `AmbiguousMutationOutcome`: the remote contact may
-exist, so reconcile before any retry. The package deliberately provides no
-remote-delete or general DNC-removal API.
+exist, so reconcile before any retry. Restriction mutations use the same conservative
+rule: a potentially applied command is not automatically replayed. The package
+deliberately provides no remote-delete or generic multi-channel DNC API.
 
 Segment commands call only Mautic's manual add/remove endpoints. They do not change
 marketing consent, remove DNC, update contact fields or send mail. Filter-based

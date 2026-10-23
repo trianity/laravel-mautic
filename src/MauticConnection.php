@@ -11,11 +11,13 @@ use Mautic\Auth\AuthInterface;
 use Mautic\MauticApi;
 use Trianity\LaravelMautic\Contracts\ContactDiscovery;
 use Trianity\LaravelMautic\Contracts\ContactReader;
+use Trianity\LaravelMautic\Contracts\ContactRestrictionWriter;
 use Trianity\LaravelMautic\Contracts\ContactWriter;
 use Trianity\LaravelMautic\Contracts\OAuthAuthenticationFailureProvider;
 use Trianity\LaravelMautic\Support\SdkConnectionReconciliationSource;
 use Trianity\LaravelMautic\Support\SdkContactDiscovery;
 use Trianity\LaravelMautic\Support\SdkContactReader;
+use Trianity\LaravelMautic\Support\SdkContactRestrictionWriter;
 use Trianity\LaravelMautic\Support\SdkContactWriter;
 use Trianity\LaravelMautic\Support\SdkResponseBoundary;
 
@@ -54,6 +56,12 @@ final readonly class MauticConnection
             $this->name,
             $this->responseBoundary(),
         );
+    }
+
+    /** Package-owned manual email block and channel-level release operations. */
+    public function restrictionWrites(): ContactRestrictionWriter
+    {
+        return new SdkContactRestrictionWriter($this->contacts(), $this->name, $this->responseBoundary());
     }
 
     /** Stable, bounded contact pages for durable reconciliation. */

@@ -9,6 +9,7 @@
 - Provider auto-discovery, publishable config, optional facade and raw SDK contexts.
 - Immutable normalized contact DTOs, bounded search and contact segment memberships.
 - Typed DNC metadata and reason reads with explicit unavailable bounce-subtype evidence.
+- Explicit typed manual email blocks and accepted channel-level restriction release.
 - Normalized read failures, read-operation safety metadata and deterministic read fake.
 - Allowlisted contact creates, PATCH-only partial updates and checked batch writes.
 - Manual segment membership commands, mutation safety metadata and deterministic fake.
@@ -36,14 +37,15 @@
 Consent workflows and completed live-Mautic compatibility acceptance. The live harness
 exists, but no server version is considered verified until its explicitly enabled tests
 pass against a validated disposable target. No webhook route is automatically exposed.
-Remote deletion and general DNC removal are not exposed. No migration runs implicitly,
+Remote deletion and generic multi-channel DNC operations are not exposed. No migration runs implicitly,
 no automatic database reset or model event exists, and no compatibility bridge for
 unreleased development schemas is provided. No release tag or Packagist publication
 exists.
 
-Safe host-owned administrative restriction writes remain unimplemented because Mautic
-7.2.1's stock channel-only removal cannot enforce ownership or an atomic revision check.
-Decision 005 defines the required minimal extension contract.
+Independent host-owned restrictions, durable restriction-command delivery and
+conditional release remain deferred. The implemented stock endpoint deliberately does
+not promise ownership or an atomic revision check; Decision 005 records this accepted
+scope and the stronger possible future design.
 
 ## Verification
 
@@ -53,9 +55,49 @@ require explicit target-specific opt-in.
 
 ## Next task
 
-Complete the Task 07 live-server acceptance matrix on an explicitly approved disposable
-local Mautic installation before claiming a supported server version. After that evidence
-is recorded, review the next roadmap milestone; do not begin it implicitly.
+Review the next roadmap milestone; do not begin it implicitly. Live evidence remains
+version- and capability-specific rather than a blanket compatibility claim.
+
+## OAuth restriction-write acceptance — 2026-10-23
+
+Task 07I adds a dedicated typed email-restriction writer over the stock SDK. A manual
+block always uses reason 3, requires a human explanation and appends one stable UTC
+`recorded_at` marker captured when the command is constructed. Explicit release uses the
+contact-and-email-channel endpoint. Both operations inspect the returned DNC state and
+perform at most one bounded GET fallback when the mutation's embedded contact shape
+cannot establish it. They expose retained, absent, released and remaining outcomes;
+verification uncertainty after a potentially completed write is distinct and no
+side-effectful request is automatically replayed.
+
+The separately gated OAuth suite passed 1 test / 49 assertions against Mautic 7.2.1.
+Four isolated disposable contacts used independent 16-request operation budgets and
+three-request cleanup reserves. The clean scenario used 14 operation requests: manual
+reason 3 was present, repeating the same command retained it, the first channel release
+reported released and the second reported no matching restriction. The existing-manual
+scenario used seven operation requests and retained its original metadata. The bounce
+scenario used ten operation requests; reason 2 became manual and explicit release left
+the channel clear. The unsubscribe scenario used ten operation requests; reason 1
+survived the attempted manual replacement, then explicit channel release removed it.
+That administrative release was not treated as renewed consent.
+
+Mautic sanitized submitted comment line feeds to `&#10;`, so neither clean nor bounce
+storage was reported as byte-exact even though the explanation and marker remained
+observable in the sanitized representation. The mutation response used an embedded
+contact shape that required the single explicit GET fallback. All four cleanup paths
+performed exactly three requests, verified exact current ID and generated email, deleted
+only the owned contact and confirmed `ContactNotFound`; no fixture remained unresolved.
+Sanitized mode-0600 evidence contains no contact IDs, addresses or raw comments. See
+`docs/compatibility/mautic-7.2.1-oauth-restriction-writes.md`.
+
+Offline real-SDK coverage includes endpoint and payload shape, stable command reuse,
+invalid pre-network inputs, manual/unsubscribe/unknown outcomes, missing/null/malformed
+DNC state, the bounded fallback read, missing `dateAdded`, normalized failures, ambiguous
+transport without replay, and release/no-match/remaining results. Decision 005 now accepts
+the stock channel-level semantics while retaining independent ownership as a deferred
+design, not a plugin prerequisite. Final `composer check` passed strict Composer
+validation, Pint, Larastan level 8 and 277 tests / 1184 assertions with four explicitly
+opt-in MariaDB tests skipped. `git diff --check` also passed; remote CI was not run for
+the uncommitted worktree.
 
 ## OAuth manual-restriction read acceptance — 2026-10-23
 
@@ -113,9 +155,9 @@ sent and the shared field definition was not mutated.
 
 Installed Mautic 7.2.1 source proves DNC response fields/reason constants, alias-scoped
 PATCH behavior, channel-level DNC replacement/removal semantics, and internal bounce
-details that are not exposed by the contact API. Decision 005 requires durable independent
-ownership plus atomic conditional release/reset in a minimal Mautic extension before any
-administrative restriction write API is added.
+details that are not exposed by the contact API. This Task 07G snapshot preceded the
+Task 07I decision to accept explicit stock channel-level operations while deferring
+independent ownership and atomic conditional release.
 
 Local `composer check` passed strict Composer validation, Pint, Larastan level 8 and
 232 tests / 1065 assertions; four explicitly opt-in MariaDB tests skipped. The final
@@ -735,8 +777,8 @@ as an ambiguous outcome and no mutation is retried automatically.
 The segment commands use the installed SDK's manual membership endpoints and do not
 change consent, DNC, fields or mail state. Documentation records dynamic-filter lag,
 manual exclusions and the fact that REST creates do not execute form submit actions.
-No remote deletion, DNC removal, observer, queue or durable delivery mechanism was
-added. Local `composer check` passed with strict Composer validation, Pint, Larastan
+That contact-write task added no remote deletion, DNC removal, observer, queue or durable
+delivery mechanism. Local `composer check` passed with strict Composer validation, Pint, Larastan
 level 8 and 61 tests / 141 assertions. It ran in the approved unrestricted environment
 because PHPStan's loopback TCP server is unavailable in the local sandbox. No live
 Mautic instance or production endpoint was called, and the remote PHP/Laravel
