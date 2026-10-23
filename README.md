@@ -719,6 +719,15 @@ hard/soft subtype or history. Missing/null DNC data is never converted into an e
 contactable result. Administrative DNC writes remain unsupported; see
 [Decision 005](docs/decisions/005-host-owned-administrative-restrictions.md).
 
+An independently configured manual restriction can be checked without mutation by
+loading ignored `tests/.env`, setting `MAUTIC_OAUTH_RESTRICTION_READ_TESTS=1` and running
+`composer test:oauth-restriction-read`. This suite has no cleanup or write path. The
+tested Mautic 7.2.1 fixture omits the optional DNC `dateAdded` property advertised by
+installed entity metadata; the corrected acceptance passed while preserving that state
+as Missing instead of inventing a timestamp. This observation is scoped to that version,
+endpoint and fixture. See the
+[sanitized compatibility report](docs/compatibility/mautic-7.2.1-oauth-manual-restriction-read.md).
+
 `Contact`, `ContactPage` and `SegmentMemberships` are immutable package DTOs.
 `OptionalValue` distinguishes a missing property, an explicit `null`, and a present
 value (including `''` or `[]`) for contact fields, tags and DNC entries. Searches

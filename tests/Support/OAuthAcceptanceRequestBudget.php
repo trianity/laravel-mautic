@@ -27,8 +27,8 @@ final class OAuthAcceptanceRequestBudget
         private readonly int $operationLimit = self::OPERATION_LIMIT,
         private readonly int $cleanupLimit = self::CLEANUP_LIMIT,
     ) {
-        if ($operationLimit < 1 || $cleanupLimit < 1) {
-            throw new InvalidArgumentException('OAuth acceptance request limits must be positive.');
+        if ($operationLimit < 1 || $cleanupLimit < 0) {
+            throw new InvalidArgumentException('The OAuth operation limit must be positive and cleanup limit non-negative.');
         }
     }
 

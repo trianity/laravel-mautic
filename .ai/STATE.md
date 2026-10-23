@@ -57,6 +57,37 @@ Complete the Task 07 live-server acceptance matrix on an explicitly approved dis
 local Mautic installation before claiming a supported server version. After that evidence
 is recorded, review the next roadmap milestone; do not begin it implicitly.
 
+## OAuth manual-restriction read acceptance — 2026-10-23
+
+Task 07H adds a separately selected, strictly read-only OAuth acceptance suite for an
+independently prepared persistent manual email restriction. Fixture configuration is
+validated before OAuth construction, and a shared PSR-18 budget allows four operation
+attempts with no cleanup reserve. The suite performs exactly two public typed contact
+reads and contains no contact, DNC, field, tag, segment, consent, subscription, mail or
+deletion mutation path.
+
+The first live run failed because the acceptance expectation incorrectly required the
+optional `dateAdded` property. Its three-attempt, token-refreshed, zero-mutation evidence
+remains preserved separately. Both observed contact responses for this Mautic 7.2.1
+endpoint and fixture omitted `dateAdded`, despite installed entity metadata advertising
+it. This scoped observation is not generalized to all Mautic responses.
+
+The corrected live run passed 1 test / 6 assertions with two contact GETs, no token
+refresh and zero mutation requests. Contact ID/email, the exact typed DNC ID, channel
+`email`, manual reason 3, explicit-null channel ID, exact comments, Missing date presence
+and narrow per-entry `BounceEvidence::NotBounced` all matched across both reads. No
+database fallback or fabricated timestamp was added, and the persistent fixture was not
+changed.
+
+Offline coverage includes pre-network gates, selection among multiple restrictions,
+missing/duplicate IDs, explicit null versus missing, Unicode comments, Missing/Null/value
+date states, value-only RFC3339 validation, changed repeated presence/value, zero cleanup
+allowance and separate sanitized mode-0600 evidence. See
+`docs/compatibility/mautic-7.2.1-oauth-manual-restriction-read.md`. Public runtime code
+did not change, so the changelog was not updated. The final focused selection passed 27
+tests / 69 assertions. `composer check` passed with Larastan level 8; the default suite
+passed 255 tests / 1112 assertions with four opt-in MariaDB tests skipped.
+
 ## Custom fields and delivery restrictions — 2026-10-23
 
 Task 07G extends normalized DNC entries with optional record ID, date added, channel ID

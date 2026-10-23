@@ -83,6 +83,19 @@ it('counts transport failures before forwarding', function () {
         ->and($budget->operationAttempts())->toBe(1);
 });
 
+it('supports a read-only budget with no cleanup allowance', function () {
+    $budget = new OAuthAcceptanceRequestBudget(operationLimit: 2, cleanupLimit: 0);
+
+    $budget->consume();
+    $budget->beginCleanup();
+
+    expect(fn () => $budget->consume())
+        ->toThrow(RuntimeException::class, 'cleanup request budget exhausted')
+        ->and($budget->operationAttempts())->toBe(1)
+        ->and($budget->cleanupAttempts())->toBe(0)
+        ->and($budget->cleanupWasRejected())->toBeTrue();
+});
+
 it('shares operation budget across clients and enforces independent cleanup allowance', function () {
     $transport = new class implements ClientInterface
     {
