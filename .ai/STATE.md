@@ -54,6 +54,27 @@ scope and the stronger possible future design.
 
 ## Verification
 
+## Continuous-arrival live burst correction — 2026-10-23
+
+Task 07J-C corrects only the OAuth burst harness. Four workers now pass an explicit ready
+barrier before the first event, continuously discover eligible durable work, survive empty
+intervals and stop after producer completion plus 30 completed deliveries. Harness state and
+an atomically reserved 500-request operation budget share a small coordination SQLite file
+separate from delivery storage; cleanup has an independent 100-request budget and cannot
+overlap active workers. One parent monotonic clock observes all reported durations.
+
+Offline lifecycle/budget regressions passed, including deadline failure, orderly drain,
+pre-transport rejection, failed-attempt accounting, restart-safe limits, parent/worker
+sharing and cleanup isolation. The final Mautic 7.2.1 run passed 2 tests / 94 assertions in
+138.62 seconds. Existing used 216 operation attempts (parent 37; workers 47/48/42/42), a
+60.017-second arrival window and 0.544-second drain. Missing used 217 (37; 48/48/42/42),
+60.013 seconds and 0.570 seconds. Both used 93 cleanup attempts, completed and verified all
+30 memberships, preserved DNC, proved pre-final-arrival completion and contention, and
+deleted every owned fixture with not-found confirmation. The earlier 152.35-second Task
+07J-B run remains historical accumulated-backlog evidence, not continuous-arrival evidence.
+The separately opted-in MariaDB burst regression passed 2 tests / 77 assertions. Final
+`composer check` passed 318 tests / 1525 assertions with seven opt-in skips.
+
 ## Membership failure phases and 30-subscription burst — 2026-10-23
 
 Task 07J-B separates the initial membership GET, mutation dispatch and verification GET.

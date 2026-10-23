@@ -419,7 +419,13 @@ MAUTIC_OAUTH_FIXTURE_TESTS=1 MAUTIC_OAUTH_SUBSCRIPTION_BURST_TESTS=1 composer te
 
 It additionally requires the established OAuth fixture gates/disposable acknowledgement
 and accepts `MAUTIC_OAUTH_SUBSCRIPTION_BURST_INTERVAL_SECONDS=60..120`. It creates and
-cleans only cryptographically named owned resources. Do not enable it on production.
+cleans only cryptographically named owned resources. Four workers are ready before the
+first arrival, remain alive across temporarily empty queues and process throughout the
+arrival window. Parent and workers atomically reserve every API/OAuth attempt from one
+shared 500-request operation allowance before transport; cleanup has an independent
+100-request allowance and starts only after every worker is reaped. One parent monotonic
+clock records arrival, completion, drain and cleanup durations. Do not enable it on
+production.
 
 ## Verified webhook inbox
 

@@ -20,29 +20,42 @@ use Trianity\LaravelMautic\Subscription\SubscriptionStatus;
 use Trianity\LaravelMautic\Tests\Support\OAuthAcceptanceHarness;
 use Trianity\LaravelMautic\Tests\Support\OAuthAcceptanceRequestBudget;
 use Trianity\LaravelMautic\Tests\Support\OAuthFixtureConfiguration;
+use Trianity\LaravelMautic\Tests\Support\OAuthSubscriptionBurstControl;
 use Trianity\LaravelMautic\Write\ContactFields;
 
 require dirname(__DIR__, 2).'/vendor/autoload.php';
 
 $databasePath = $argv[1] ?? '';
-$scenario = $argv[2] ?? '';
-$worker = (int) ($argv[3] ?? -1);
-$mode = $argv[4] ?? '';
+$coordinationPath = $argv[2] ?? '';
+$scenario = $argv[3] ?? '';
+$worker = (int) ($argv[4] ?? -1);
 $workers = (int) ($argv[5] ?? 0);
+$lifetimeSeconds = (int) ($argv[6] ?? 0);
+$workerName = 'worker-'.$worker;
 $configuration = OAuthFixtureConfiguration::fromEnvironment();
-$budget = new OAuthAcceptanceRequestBudget(operationLimit: 100, cleanupLimit: 0);
+$budget = OAuthAcceptanceRequestBudget::shared(
+    $coordinationPath,
+    $workerName,
+    500,
+    100,
+    cleanupAllowed: false,
+);
 $connection = (new OAuthAcceptanceHarness($configuration->oauth, requestBudget: $budget))->connection();
 $capsule = new Manager;
 $capsule->addConnection(['driver' => 'sqlite', 'database' => $databasePath, 'prefix' => '']);
 $capsule->setAsGlobal();
 $capsule->getConnection()->statement('PRAGMA busy_timeout = 15000');
-$events = static function (string $name) use ($capsule, $worker): void {
-    $capsule->table('subscription_live_burst_events')->insert(['name' => $name, 'worker' => (string) $worker]);
+$control = new OAuthSubscriptionBurstControl($coordinationPath);
+$contenderRecorded = false;
+$events = static function (string $name) use ($control, $workerName): void {
+    $control->event($name, $workerName);
 };
-$waitForContenders = static function () use ($capsule, $workers): void {
-    $deadline = microtime(true) + 20;
-    while ($capsule->table('subscription_live_burst_events')->where('name', 'contender_pending')->count()
-        < min(3, $workers - 1) && microtime(true) < $deadline) {
+$waitForContenders = static function () use ($control, $workers): void {
+    $deadline = hrtime(true) + 15_000_000_000;
+    while ($control->eventCount('contender_pending', distinctWorkers: true) < min(3, $workers - 1)) {
+        if (hrtime(true) >= $deadline) {
+            throw new RuntimeException('Live subscription burst provisioning contention barrier timed out.');
+        }
         usleep(10_000);
     }
 };
@@ -60,13 +73,13 @@ $contactTransport = new class($connection) implements ContactSyncTransport
         $this->connection->contactWrites()->update($remoteId, $fields);
     }
 };
-$gateway = new class($connection->staticSegments(), $scenario, $capsule, $events, $waitForContenders) implements StaticSegmentGateway
+$gateway = new class($connection->staticSegments(), $scenario, $control, $events, $waitForContenders) implements StaticSegmentGateway
 {
     /** @param Closure(string): void $events */
     public function __construct(
         private readonly StaticSegmentGateway $inner,
         private readonly string $scenario,
-        private readonly Manager $database,
+        private readonly OAuthSubscriptionBurstControl $control,
         private readonly Closure $events,
         private readonly Closure $waitForContenders,
     ) {}
@@ -74,7 +87,7 @@ $gateway = new class($connection->staticSegments(), $scenario, $capsule, $events
     public function find(int $remoteId): StaticSegment
     {
         if ($this->scenario === 'existing'
-            && $this->database->table('subscription_live_burst_barriers')->insertOrIgnore(['name' => 'resolver']) === 1) {
+            && $this->control->claimBarrier('resolver')) {
             ($this->events)('resolver_held');
             ($this->waitForContenders)();
         }
@@ -123,33 +136,41 @@ $store = new DatabaseSubscriptionStore($capsule->getDatabaseManager(), $clock);
 $mappings = new DatabaseContactMappingRepository($capsule->getDatabaseManager());
 $outboxProcessor = new OutboxProcessor($outbox, $contactTransport, $mappings, $clock);
 $subscriptionProcessor = new SubscriptionProcessor($store, $outbox, $mappings, $subscriptionTransport);
+$deadline = hrtime(true) + ($lifetimeSeconds * 1_000_000_000);
+$control->workerReady($workerName);
 
 try {
-    if ($mode === 'initial') {
-        $events('worker_ready');
-        $deadline = microtime(true) + 20;
-        while ($capsule->table('subscription_live_burst_events')->where('name', 'worker_ready')->count() < $workers
-            && microtime(true) < $deadline) {
-            usleep(10_000);
+    while (true) {
+        if ($control->stopIsRequested()) {
+            break;
         }
-    }
-    $rows = $capsule->table('mautic_subscription_intents')->orderBy('id')->get()->all();
-    foreach ($rows as $index => $row) {
-        if ($index % $workers !== $worker) {
-            continue;
-        }
-        if ($mode === 'initial') {
+        foreach ($store->recoverable(100) as $operationId) {
+            $row = $capsule->table('mautic_subscription_intents')
+                ->where('operation_id', $operationId)->first(['id', 'contact_operation_id']);
+            if ($row === null || (((int) $row->id - 1) % $workers) !== $worker) {
+                continue;
+            }
             $outboxProcessor->process((string) $row->contact_operation_id);
+            $subscriptionProcessor->process($operationId);
+            if (! $contenderRecorded && $store->get($operationId)?->status === SubscriptionStatus::Pending) {
+                $events('contender_pending');
+                $contenderRecorded = true;
+            }
         }
-        $subscriptionProcessor->process((string) $row->operation_id);
-        if ($mode === 'initial' && $store->get((string) $row->operation_id)?->status === SubscriptionStatus::Pending) {
-            $events('contender_pending');
+        $completed = (int) $capsule->table('mautic_subscription_intents')
+            ->where('status', SubscriptionStatus::Completed->value)->count();
+        if ($control->productionIsComplete() && $completed === 30) {
+            break;
         }
+        if (hrtime(true) >= $deadline) {
+            $events('worker_deadline');
+            throw new RuntimeException('Live subscription burst worker deadline exhausted.');
+        }
+        usleep(25_000);
     }
-    $events('worker_done');
+} catch (Throwable $exception) {
+    $events('worker_failed');
+    throw $exception;
 } finally {
-    $capsule->table('subscription_live_burst_worker_requests')->insert([
-        'worker' => (string) $worker.'-'.$mode,
-        'attempts' => $budget->operationAttempts(),
-    ]);
+    $control->workerDone($workerName);
 }

@@ -64,6 +64,9 @@
 
 ### Fixed
 
+- Correct the live subscription-burst harness to process continuous arrivals with a bounded
+  worker lifecycle, monotonic timing, pre-transport process-shared request limits and cleanup
+  that cannot overlap active fixture mutation.
 - Separate membership preflight reads, mutation dispatch and post-write verification into
   evidence-correct durable states; add bounded `Retry-After` scheduling, conservative 5xx
   and malformed-response handling, and four-process 30-subscription SQLite/MariaDB coverage.

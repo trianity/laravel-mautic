@@ -10,7 +10,7 @@ final class OAuthSubscriptionEvidence
 {
     private readonly string $path;
 
-    /** @var array<string, int|string> */
+    /** @var array<string, array<string, array{cleanup: int, operation: int}>|float|int|string> */
     private array $evidence;
 
     public function __construct(string $runId, ?string $storageDirectory = null)
@@ -46,6 +46,41 @@ final class OAuthSubscriptionEvidence
     {
         $this->evidence['operation_request_attempts'] = $operations;
         $this->evidence['cleanup_request_attempts'] = $cleanup;
+        $this->persist();
+    }
+
+    public function timings(
+        float $workerReady,
+        float $firstArrival,
+        float $lastArrival,
+        float $lastCompletion,
+        float $arrivalWindow,
+        float $processing,
+        float $queueDrain,
+        float $cleanup,
+    ): void {
+        $this->evidence['worker_ready_seconds'] = $workerReady;
+        $this->evidence['first_arrival_seconds'] = $firstArrival;
+        $this->evidence['last_arrival_seconds'] = $lastArrival;
+        $this->evidence['last_completion_seconds'] = $lastCompletion;
+        $this->evidence['arrival_window_seconds'] = $arrivalWindow;
+        $this->evidence['processing_seconds'] = $processing;
+        $this->evidence['queue_drain_seconds'] = $queueDrain;
+        $this->evidence['cleanup_seconds'] = $cleanup;
+        $this->persist();
+    }
+
+    /** @param array<string, array{operation: int, cleanup: int}> $attempts */
+    public function consumerRequestCounts(array $attempts): void
+    {
+        foreach ($attempts as $consumer => $counts) {
+            if (preg_match('/^(parent|worker-[0-9]+)$/D', $consumer) !== 1
+                || $counts['operation'] < 0 || $counts['cleanup'] < 0) {
+                throw new RuntimeException('Subscription request consumer evidence is invalid.');
+            }
+        }
+        ksort($attempts);
+        $this->evidence['request_attempts_by_consumer'] = $attempts;
         $this->persist();
     }
 

@@ -56,8 +56,9 @@ It is not enabled by `MAUTIC_OAUTH_SUBSCRIPTION_TESTS`.
 
 ## Task 07J-B live burst — 2026-10-23
 
-Both disposable live scenarios passed with 2 tests / 128 assertions in 152.35 seconds.
-Each scheduled 30 arrivals over 60 seconds and used four independent PHP workers. All 30
+Both historical disposable live scenarios passed with 2 tests / 128 assertions in 152.35 seconds.
+Each recorded 30 arrivals over 60 seconds, then started four independent PHP workers against
+the accumulated backlog. All 30
 intents completed, all 30 distinct contacts were mapped to the intended remote contacts,
 and all 30 exact memberships were observed in the single expected segment. The existing
 target dispatched zero segment creates; the missing create-if-absent target dispatched
@@ -70,6 +71,30 @@ cleanup re-read every generated email and the exact generated segment identity, 
 all 30 contacts and the segment, and confirmed every API not-found result. The ignored
 mode-0600 evidence records only run hashes, completion/cleanup outcomes and request counts.
 No real host application, campaign entry or email delivery was exercised.
+
+## Task 07J-C corrected continuous-arrival burst — 2026-10-23
+
+The corrected harness starts four workers before the first event, waits for an explicit
+ready barrier and processes committed work throughout the 60-second arrival window. A
+separate SQLite coordination store supplies producer/worker lifecycle, bounded contention
+barriers and one authoritative pre-transport request budget shared by parent, workers and
+OAuth token calls. Cleanup has independent capacity and cannot start before worker reap.
+One parent monotonic clock observes all reported timings.
+
+The final run passed 2 tests / 94 assertions in 138.62 seconds. Existing-segment evidence:
+60.017-second arrival window, 60.561-second processing duration, 0.544-second drain, 216
+operation requests split parent 37 and workers 47/48/42/42. Missing-segment evidence:
+60.013-second arrival window, 60.583-second processing duration, 0.570-second drain, 217
+operation requests split 37 and 48/48/42/42. Both used 93 cleanup requests. The configured
+ceilings remained 500 operation and 100 cleanup attempts.
+
+Both scenarios completed and remotely verified 30 distinct deliveries before their bounded
+deadline, with some work complete before the final arrival. Existing dispatched zero segment
+creates and missing exactly one; both proved distinct provisioning contenders and left no
+failed, blocked or ambiguous state. Exact DNC metadata remained unchanged. After all workers
+stopped, ownership-checked cleanup deleted every contact and segment and confirmed not-found.
+Sanitized mode-0600 evidence contains hashes, outcomes, authoritative/per-consumer counts and
+monotonic elapsed values only. No host application, campaign or email delivery was exercised.
 
 ## Verified run — 2026-10-23
 

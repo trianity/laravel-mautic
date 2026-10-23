@@ -25,6 +25,16 @@ use Trianity\LaravelMautic\Tests\Support\BudgetedHttpClientFactory;
 use Trianity\LaravelMautic\Tests\Support\OAuthAcceptanceRequestBudget;
 use Trianity\LaravelMautic\Write\ContactFields;
 
+function sharedOAuthBudgetPath(): string
+{
+    $path = tempnam(sys_get_temp_dir(), 'mautic-oauth-budget-');
+    if (! is_string($path)) {
+        throw new RuntimeException('Unable to create shared budget database.');
+    }
+
+    return $path;
+}
+
 it('forwards requests through the limit and rejects the next before transport', function () {
     $transport = new class implements ClientInterface
     {
@@ -216,4 +226,41 @@ it('measures SDK extra requests and OAuth token requests through one factory bud
         ->and((string) $history[1]['request']->getUri())->toContain('/api/contacts/new')
         ->and((string) $history[2]['request']->getUri())->toBe('https://mautic.test/oauth/v2/token')
         ->and((string) $history[3]['request']->getUri())->toBe('https://mautic.test/oauth/v2/token');
+});
+
+it('atomically shares request limits across parent and restarted workers', function () {
+    $path = sharedOAuthBudgetPath();
+
+    try {
+        $parent = OAuthAcceptanceRequestBudget::shared($path, 'parent', 3, 2, initialize: true);
+        $workerOne = OAuthAcceptanceRequestBudget::shared($path, 'worker-1', 3, 2, cleanupAllowed: false);
+        $restartedWorker = OAuthAcceptanceRequestBudget::shared(
+            $path, 'worker-1-restart', 3, 2, cleanupAllowed: false,
+        );
+
+        $parent->consume();
+        $workerOne->consume();
+        $restartedWorker->consume();
+
+        expect(fn () => $workerOne->consume())
+            ->toThrow(RuntimeException::class, 'operation request budget exhausted')
+            ->and($parent->operationAttempts())->toBe(3)
+            ->and($parent->consumerAttempts())->toBe([
+                'parent' => ['operation' => 1, 'cleanup' => 0],
+                'worker-1' => ['operation' => 1, 'cleanup' => 0],
+                'worker-1-restart' => ['operation' => 1, 'cleanup' => 0],
+            ]);
+
+        $parent->beginCleanup();
+        $parent->consume();
+        expect(fn () => $workerOne->consume())
+            ->toThrow(RuntimeException::class, 'disabled after cleanup began');
+        $parent->consume();
+        expect(fn () => $parent->consume())
+            ->toThrow(RuntimeException::class, 'cleanup request budget exhausted')
+            ->and($parent->operationAttempts())->toBe(3)
+            ->and($parent->cleanupAttempts())->toBe(2);
+    } finally {
+        @unlink($path);
+    }
 });
