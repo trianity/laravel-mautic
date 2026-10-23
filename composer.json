@@ -48,6 +48,7 @@
         "test": "pest",
         "test:live": "pest --configuration=phpunit.live.xml",
         "test:oauth-live": "pest --configuration=phpunit.oauth-live.xml",
+        "test:oauth-fixture": "pest --configuration=phpunit.oauth-fixture.xml",
         "format": "pint",
         "format:check": "pint --test",
         "analyse": "phpstan analyse --memory-limit=1G",

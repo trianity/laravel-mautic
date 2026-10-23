@@ -604,6 +604,26 @@ documented API v2 contact collection. Optional existing fixture reads require bo
 dedicated fixture they skip. The suite never creates, updates or deletes contacts and
 does not change DNC, consent or segment membership.
 
+The OAuth contact-lifecycle suite is selected separately and requires both its own
+mutation opt-in and the exact disposable acknowledgement. The read-only OAuth opt-in
+alone never authorizes mutations:
+
+```bash
+set -a
+source tests/.env
+set +a
+export MAUTIC_OAUTH_FIXTURE_TESTS=1
+export MAUTIC_LIVE_DISPOSABLE=I_UNDERSTAND_THIS_DELETES_OWN_FIXTURES
+composer test:oauth-fixture
+```
+
+It creates a cryptographically suffixed `lm-live-mautic721.*@example.test` contact,
+records ignored mode-0600 ownership evidence, verifies create/read/discovery/PATCH/
+clear/DNC/duplicate behavior and deletes only after an exact ID-and-email re-read.
+Configure `MAUTIC_LIVE_OAUTH_STATIC_SEGMENT_ID` only for a dedicated static test
+segment; otherwise that probe is explicitly skipped. Never select a business or
+dynamic segment for this suite.
+
 ## Normalized contact reads
 
 ```php
@@ -668,10 +688,13 @@ $writes->removeFromSegment($contact->remoteId, $segmentId);
 ```
 
 `ContactFields` accepts arrays only and rejects every key not present in the supplied
-host allowlist. Generic writes also reject IDs, tags, DNC and server-managed timestamp
-fields even if allowlisted. An omitted key is not sent. Explicit `null`, `false`, `0`
-and `''` values are retained in the JSON payload; whether a blank value clears a
-specific remote field still depends on that field and the target Mautic version.
+host allowlist. Generic writes also reject IDs, tags, DNC, server-managed timestamps
+and the adapter-owned `overwriteWithBlank` control even if allowlisted. An omitted key
+is not sent. Explicit `null`, `false`, `0` and `''` values are retained in the JSON
+payload. For updates containing `null` or `''`, the `/api` adapter adds Mautic's
+`overwriteWithBlank=true` control so the explicit blank is not silently ignored.
+Whether a blank is valid for a specific field still depends on that field and the
+target Mautic version.
 Never pass `Model::toArray()` as a field map.
 
 Updates always use SDK `edit(..., false)`, which is an HTTP PATCH. A missing target

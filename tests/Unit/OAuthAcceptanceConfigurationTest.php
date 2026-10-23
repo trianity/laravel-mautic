@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 use Trianity\LaravelMautic\Tests\Support\OAuthAcceptanceConfiguration;
 use Trianity\LaravelMautic\Tests\Support\OAuthAcceptanceHarness;
+use Trianity\LaravelMautic\Tests\Support\OAuthFixtureConfiguration;
+use Trianity\LaravelMautic\Tests\Support\OAuthFixtureEvidence;
 
 /** @return array<string, string> */
 function validOAuthAcceptanceEnvironment(string $installPath, string $certificatePath): array
@@ -132,5 +134,57 @@ it('prepares encrypted persistent local state without exposing the context or cl
             rmdir($storage);
         }
         removeOAuthAcceptanceFixture($directory);
+    }
+});
+
+it('requires a separate mutation opt-in and exact disposable acknowledgement for OAuth fixtures', function () {
+    [$directory, $certificate] = oauthAcceptanceFixture();
+
+    try {
+        $oauth = OAuthAcceptanceConfiguration::fromArray(
+            validOAuthAcceptanceEnvironment($directory, $certificate),
+            static fn (): array => ['127.0.0.1'],
+        );
+
+        expect(fn () => OAuthFixtureConfiguration::fromArray([], $oauth))
+            ->toThrow(RuntimeException::class, 'Set MAUTIC_OAUTH_FIXTURE_TESTS=1')
+            ->and(fn () => OAuthFixtureConfiguration::fromArray([
+                'MAUTIC_OAUTH_FIXTURE_TESTS' => '1',
+            ], $oauth))->toThrow(RuntimeException::class, 'exact MAUTIC_LIVE_DISPOSABLE acknowledgement');
+
+        $configuration = OAuthFixtureConfiguration::fromArray([
+            'MAUTIC_OAUTH_FIXTURE_TESTS' => '1',
+            'MAUTIC_LIVE_DISPOSABLE' => OAuthFixtureConfiguration::DISPOSABLE_ACKNOWLEDGEMENT,
+            'MAUTIC_LIVE_OAUTH_STATIC_SEGMENT_ID' => '17',
+        ], $oauth);
+        expect($configuration->staticSegmentId)->toBe(17);
+    } finally {
+        removeOAuthAcceptanceFixture($directory);
+    }
+});
+
+it('persists sanitized owned-fixture evidence with restrictive permissions', function () {
+    $directory = sys_get_temp_dir().'/mautic-oauth-evidence-'.bin2hex(random_bytes(6));
+
+    try {
+        $evidence = new OAuthFixtureEvidence('run123', 'lm-live-mautic721.run123@example.test', $directory);
+        $evidence->created(42);
+        $evidence->deleted();
+        $payload = json_decode((string) file_get_contents($evidence->path()), true, flags: JSON_THROW_ON_ERROR);
+
+        expect(fileperms($evidence->path()) & 0777)->toBe(0600)
+            ->and($payload)->toBe([
+                'run_id' => 'run123',
+                'email' => 'lm-live-mautic721.run123@example.test',
+                'remote_id' => 42,
+                'status' => 'deleted',
+            ]);
+    } finally {
+        foreach (glob($directory.'/*') ?: [] as $path) {
+            unlink($path);
+        }
+        if (is_dir($directory)) {
+            rmdir($directory);
+        }
     }
 });

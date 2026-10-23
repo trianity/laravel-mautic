@@ -16,6 +16,7 @@ final readonly class ContactFields
         'dateadded',
         'datemodified',
         'lastactive',
+        'overwritewithblank',
     ];
 
     /** @param array<string, mixed> $values */

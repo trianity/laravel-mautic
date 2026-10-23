@@ -55,7 +55,7 @@ final readonly class SdkContactWriter implements ContactWriter
     {
         $this->validateRemoteId($remoteId);
         $operation = MutationOperation::UpdateContact;
-        $rawResponse = $this->contacts->edit($remoteId, $fields->toPayload(), false);
+        $rawResponse = $this->contacts->edit($remoteId, $this->updatePayload($fields), false);
         $response = $this->boundary->successfulWrite(
             $rawResponse,
             $operation,
@@ -100,7 +100,7 @@ final readonly class SdkContactWriter implements ContactWriter
         $payloads = [];
         foreach ($contacts as $update) {
             $this->validateRemoteId($update->remoteId);
-            $payloads[] = ['id' => $update->remoteId] + $update->fields->toPayload();
+            $payloads[] = ['id' => $update->remoteId] + $this->updatePayload($update->fields);
         }
 
         $operation = MutationOperation::UpdateContactsBatch;
@@ -170,6 +170,17 @@ final readonly class SdkContactWriter implements ContactWriter
                 $this->boundary->unexpected(ReadOperation::SearchContacts, $this->connection);
             }
         } while ($start < $total);
+    }
+
+    /** @return array<string, mixed> */
+    private function updatePayload(ContactFields $fields): array
+    {
+        $payload = $fields->toPayload();
+        if (array_any($payload, static fn (mixed $value): bool => $value === null || $value === '')) {
+            $payload['overwriteWithBlank'] = true;
+        }
+
+        return $payload;
     }
 
     private function contactEmail(mixed $contact): ?string

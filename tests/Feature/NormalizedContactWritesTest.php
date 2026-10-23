@@ -15,6 +15,7 @@ use Trianity\LaravelMautic\Contracts\HttpClientFactory;
 use Trianity\LaravelMautic\Exceptions\AmbiguousMutationOutcome;
 use Trianity\LaravelMautic\Exceptions\ContactAlreadyExists;
 use Trianity\LaravelMautic\Exceptions\ContactUpdateTargetNotFound;
+use Trianity\LaravelMautic\Exceptions\InvalidWriteRequest;
 use Trianity\LaravelMautic\Exceptions\MauticReadException;
 use Trianity\LaravelMautic\Exceptions\MauticWriteException;
 use Trianity\LaravelMautic\MauticManager;
@@ -89,6 +90,7 @@ it('uses POST for creation, PATCH without create-if-missing for updates, and pre
             'subscribed' => false,
             'score' => 0,
             'company' => '',
+            'overwriteWithBlank' => true,
         ])
         ->and((string) $history[3]['request']->getUri())->toBe('https://mautic.example.test/api/segments/9/contact/42/add')
         ->and($history[3]['request']->getMethod())->toBe('POST')
@@ -96,6 +98,25 @@ it('uses POST for creation, PATCH without create-if-missing for updates, and pre
         ->and((string) $history[4]['request']->getUri())->toBe('https://mautic.example.test/api/segments/9/contact/42/remove')
         ->and($history[4]['request']->getMethod())->toBe('POST')
         ->and((string) $history[4]['request']->getBody())->toBe('[]');
+});
+
+it('adds the Mautic blank-overwrite control only when a PATCH explicitly clears a field', function () {
+    $history = [];
+    useContactWriteResponses([
+        new Response(200, ['Content-Type' => 'application/json'], contactJson(42, ['firstname' => 'Ada'])),
+    ], $history);
+
+    app(MauticManager::class)->connection()->contactWrites()->update(
+        42,
+        ContactFields::fromArray(['firstname' => 'Ada'], ['firstname']),
+    );
+
+    expect(json_decode((string) $history[0]['request']->getBody(), true, flags: JSON_THROW_ON_ERROR))
+        ->toBe(['firstname' => 'Ada'])
+        ->and(fn () => ContactFields::fromArray(
+            ['overwriteWithBlank' => true],
+            ['overwriteWithBlank'],
+        ))->toThrow(InvalidWriteRequest::class);
 });
 
 it('rejects an exact normalized duplicate before Mautic can merge it', function () {
@@ -356,10 +377,14 @@ it('uses PATCH for batch updates and checks every returned item', function () {
 
     $result = app(MauticManager::class)->connection()->contactWrites()->updateBatch(
         new ContactUpdate(10, ContactFields::fromArray(['firstname' => 'Ada'], ['firstname'])),
-        new ContactUpdate(11, ContactFields::fromArray(['firstname' => 'Grace'], ['firstname'])),
+        new ContactUpdate(11, ContactFields::fromArray(['firstname' => null], ['firstname'])),
     );
 
     expect($result->contacts)->toHaveCount(2)
         ->and($history[0]['request']->getMethod())->toBe('PATCH')
-        ->and((string) $history[0]['request']->getUri())->toBe('https://mautic.example.test/api/contacts/batch/edit');
+        ->and((string) $history[0]['request']->getUri())->toBe('https://mautic.example.test/api/contacts/batch/edit')
+        ->and(json_decode((string) $history[0]['request']->getBody(), true, flags: JSON_THROW_ON_ERROR))->toBe([
+            ['id' => 10, 'firstname' => 'Ada'],
+            ['id' => 11, 'firstname' => null, 'overwriteWithBlank' => true],
+        ]);
 });

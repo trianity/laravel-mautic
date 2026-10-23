@@ -18,12 +18,12 @@ function oauthAcceptanceHarness(): OAuthAcceptanceHarness
 
 it('persists refreshes and uses OAuth for bounded API reads without Basic Auth', function () {
     $harness = oauthAcceptanceHarness();
-    $before = $harness->requiredTokenRecord();
+    $initial = $harness->requiredTokenRecord();
     $connection = $harness->connection();
     $page = $connection->contactReads()->search(new ContactSearch('', 0, 1));
 
-    expect($before->generation)->toBeGreaterThanOrEqual(1)
-        ->and($before->token->expiresAt)->toBeGreaterThan(0)
+    expect($initial->generation)->toBeGreaterThanOrEqual(1)
+        ->and($initial->token->expiresAt)->toBeGreaterThan(0)
         ->and($page->limit)->toBe(1)
         ->and(count($page->contacts))->toBeLessThanOrEqual(1)
         ->and($page->total)->toBeGreaterThanOrEqual(count($page->contacts));
@@ -32,15 +32,15 @@ it('persists refreshes and uses OAuth for bounded API reads without Basic Auth',
     expect($invalid->getStatusCode())->toBeIn([401, 403])
         ->and($invalid->hasHeader('Location'))->toBeFalse();
 
-    $refreshed = $harness->refreshExpiredDedicatedToken();
-    expect($refreshed->generation)->toBe($before->generation + 2)
-        ->and($refreshed->token->expiresAt)->toBeGreaterThan(time());
+    $refresh = $harness->refreshExpiredDedicatedToken();
+    expect($refresh->after->generation)->toBe($refresh->before->generation + 2)
+        ->and($refresh->after->token->expiresAt)->toBeGreaterThan(time());
 
     $postRefreshPage = $harness->connection()->contactReads()->search(new ContactSearch('', 0, 1));
     expect($postRefreshPage->limit)->toBe(1)
         ->and(count($postRefreshPage->contacts))->toBeLessThanOrEqual(1);
 
-    $v2 = $harness->apiV2Probe($refreshed->token);
+    $v2 = $harness->apiV2Probe($refresh->after->token);
     expect($v2->getStatusCode())->toBeIn([200, 401, 403])
         ->and($v2->hasHeader('Location'))->toBeFalse();
     $mediaType = strtolower(trim(explode(';', $v2->getHeaderLine('Content-Type'))[0]));

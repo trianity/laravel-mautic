@@ -135,6 +135,50 @@ Local `composer check` passed strict Composer validation, Pint, Larastan level 8
 200 tests / 981 assertions; four opt-in MariaDB tests were skipped by the default
 environment. Remote CI was not run.
 
+## OAuth contact lifecycle acceptance — 2026-10-23
+
+Task 07E adds a third, separately selected suite for owned OAuth contact mutations.
+`composer test:oauth-fixture` requires `MAUTIC_OAUTH_FIXTURE_TESTS=1`, the existing
+read-only OAuth configuration and the exact disposable acknowledgement. It retains the
+exact-origin, loopback-only DNS, verified TLS, no-redirect and OAuth-only guards. The
+read-only opt-in by itself skips before configuration or networking.
+
+Each run creates a cryptographically suffixed `lm-live-mautic721.*@example.test`
+fixture and maintains ignored mode-0600 evidence with the run ID, exact email, remote ID
+and cleanup state. Cleanup first performs a typed read and requires the exact ID/email;
+only then does it use the raw deletion escape hatch, followed by a typed
+`ContactNotFound` assertion. Ambiguous creates are neither repeated nor blindly deleted.
+
+The controlled refresh assertion now captures its baseline immediately before expiry
+simulation. Offline tests cover both a valid initial token and an initially expired
+token that an earlier use refreshes; the controlled procedure must add exactly two
+generations. The read-only live suite passed 1 test / 19 assertions with the corrected
+baseline, with its old externally configured fixture read still skipped.
+
+The lifecycle probe found that Mautic 7.2.1 reports success but retains contact blanks
+unless `overwriteWithBlank=true` accompanies the PATCH. Offline regression tests were
+red before the `/api` writer added this adapter-owned control for update payloads that
+contain null or empty-string values, including batch items. `ContactFields` now rejects
+host attempts to provide the control. The final live suite passed 1 test / 34 assertions:
+absence discovery, create, ID read, normalized exact-email discovery, firstname-only
+PATCH preservation, explicit phone clear, known-empty DNC preservation, duplicate-create
+rejection and ownership-checked cleanup all passed. Every contact created by diagnostic
+and final runs has ignored evidence status `deleted`.
+
+No dedicated static segment ID was configured, so only that optional probe remains
+unverified. Populated-DNC preservation, dynamic segments, consent, campaigns, segment
+definitions, outbox/inbox integration, reconciliation and full host acceptance remain
+pending. The sanitized report is
+`docs/compatibility/mautic-7.2.1-oauth-contact-lifecycle.md`. The exercised environment
+used package baseline `280d94a8e18ce0b73cfd4a89d6fd096969aa2b4f` plus this Task 07E
+worktree, PHP 8.5.12, Laravel 13.37.0, Testbench 11.3.0, Pest 5.3.3, API Library 4.0.0
+and Mautic 7.2.1.
+
+Final local `composer check` passed strict Composer validation, Pint, Larastan level 8
+and 205 tests / 995 assertions; four opt-in MariaDB tests were skipped. Both isolated
+OAuth suites skipped with zero assertions and no network access without their own
+opt-ins. Remote CI was not run.
+
 ## Reconciliation, diagnostics and live-server harness — 2026-10-19
 
 Task 07 adds bounded, resumable contact reconciliation without treating an incomplete or

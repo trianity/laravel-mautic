@@ -45,6 +45,8 @@ final class OAuthAcceptanceHarness
 
     private readonly OAuthTokenManager $tokenManager;
 
+    private readonly SystemClock $clock;
+
     private readonly OAuth2Service $oauth;
 
     private readonly VerifiedLocalHttpClientFactory $httpClients;
@@ -76,7 +78,7 @@ final class OAuthAcceptanceHarness
                 ],
             ]],
         ]]);
-        $clock = new SystemClock;
+        $clock = $this->clock = new SystemClock;
         $encrypter = new Encrypter($key, 'AES-256-CBC');
         $this->tokens = new DatabaseOAuthTokenRepository($this->database, $encrypter);
         $states = new DatabaseOAuthStateRepository($this->database, $clock);
@@ -148,22 +150,10 @@ final class OAuthAcceptanceHarness
         return $factory->make($configuration);
     }
 
-    public function refreshExpiredDedicatedToken(): OAuthTokenRecord
+    public function refreshExpiredDedicatedToken(): OAuthRefreshEvidence
     {
-        $record = $this->requiredTokenRecord();
-        $expired = new OAuthToken(
-            $record->token->accessToken,
-            $record->token->refreshToken,
-            time() - 1,
-            $record->token->tokenType,
-        );
-        if (! $this->tokens->persist(self::CONNECTION, $expired, $record->generation)) {
-            throw new RuntimeException('The dedicated acceptance token could not be marked expired safely.');
-        }
-
-        $this->tokenManager->validToken(self::CONNECTION);
-
-        return $this->requiredTokenRecord();
+        return (new ControlledOAuthRefresh($this->tokens, $this->tokenManager, $this->clock))
+            ->run(self::CONNECTION);
     }
 
     public function invalidBearerProbe(): ResponseInterface

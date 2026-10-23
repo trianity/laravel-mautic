@@ -34,8 +34,11 @@ publish safety metadata but are not retried automatically. `FakeContactReader`
 provides the same contract for deterministic host tests.
 
 `contactWrites()` returns the package-owned `ContactWriter`. `ContactFields` rejects
-non-allowlisted and protected side-effect fields, while preserving explicit scalar,
-null and empty values. Updates use PATCH with create-if-missing disabled. Creation
+non-allowlisted fields, protected side-effect fields and the adapter-owned
+`overwriteWithBlank` control, while preserving explicit scalar, null and empty values.
+Updates use PATCH with create-if-missing disabled. When a PATCH contains `null` or an
+empty string, the adapter adds Mautic's blank-overwrite control so the server applies
+the explicit clear instead of reporting a successful no-op. Creation
 preflights non-empty email values because Mautic can merge duplicate-email creates;
 known matches and intra-batch duplicates are rejected. This read-before-write check
 does not eliminate concurrent races; the separate durable identity and reconciliation

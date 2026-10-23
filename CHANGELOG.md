@@ -46,9 +46,15 @@
   capability inventory for future adapter evaluation.
 - An isolated, exact-origin OAuth Authorization Code acceptance harness with encrypted
   persistent test tokens, verified local TLS and bounded read-only API probes.
+- A separately gated OAuth contact-lifecycle acceptance suite with durable ignored
+  ownership evidence, exact cleanup checks and optional dedicated static-segment proof.
 
 ### Fixed
 
+- Send Mautic's adapter-owned blank-overwrite control for explicit null or empty-string
+  contact PATCH values, preventing successful no-op clears on Mautic 7.2.1.
+- Measure the controlled OAuth refresh generation baseline immediately before expiry
+  simulation, including when an earlier API read refreshed an initially expired token.
 - Normalize non-negative numeric-string collection totals returned by the Mautic 7.2.1
   API through the upstream SDK while retaining strict integer DTO contracts.
 
