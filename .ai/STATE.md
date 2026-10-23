@@ -195,28 +195,37 @@ preflight therefore requires the exact configured ID, the exact dedicated name
 inaccessible, malformed, differently named and dynamically filtered definitions;
 `isGlobal` is not treated as static-segment evidence. No production API was expanded.
 
-The live probe has a fixed 16-request operation budget plus bounded cleanup.
-It creates only a random owned contact after segment preflight, treats membership reads
-as ID sets, verifies add/repeated-add/remove/repeated-remove outcomes, compares DNC
+The live probe has a test-only PSR-18 decorator around the existing verified local HTTP
+client factory. Every API or OAuth token `sendRequest()` attempt consumes one shared
+16-request operation budget before forwarding, including transport failures and SDK
+extra requests. Once cleanup begins the same budget object switches permanently to an
+independent 5-request allowance; it neither resets nor replenishes operation work. The
+probe creates only a random owned contact after segment preflight, treats membership
+reads as ID sets, verifies add/repeated-add/remove/repeated-remove outcomes, compares DNC
 before and after, records a possible membership before sending add, and preserves the
 original failure through membership and exact-ownership contact cleanup.
 
 Focused offline preflight coverage passed 7 tests / 10 assertions. The focused suite
 without its mutation opt-in skipped 1 test / 0 assertions without networking. With the
 mutation gates enabled but no configured segment ID, it failed before OAuth setup or
-mutation with the explicit missing-prerequisite error. The full `composer check` passed:
-Larastan level 8 reported no errors and the default suite passed 212 tests / 1005
-assertions with 4 explicitly opt-in MariaDB tests skipped.
+mutation with the explicit missing-prerequisite error. Task 07F-A added 4 request-budget
+regressions / 22 assertions; the combined focused offline selection passed 21 tests / 58
+assertions. It proves pre-forward rejection, shared factory accounting, transport-failure
+accounting, independent cleanup capacity, secret-free errors and real SDK create-preflight
+plus OAuth token endpoint wiring. The full `composer check` passed: Larastan level 8
+reported no errors and the default suite passed 216 tests / 1027 assertions with 4
+explicitly opt-in MariaDB tests skipped.
 
-The authorized live run against exact `https://mautic.test` then passed 1 test / 11
-assertions. The first execution exposed only an incorrect exact request-count assertion:
-the complete operation path used 15 of the permitted 16 requests. After correcting that
-test accounting, the rerun passed. Mautic accepted repeated add and repeated remove as
-successful commands, every read showed the exact expected membership ID set immediately,
-and the known DNC value remained unchanged. Both run-owned contacts were verified,
-deleted, and confirmed absent; cleanup evidence reports the membership already absent.
-No segment definition, DNC, consent or customer data changed. Manual setup and sanitized
-evidence are recorded in README and the compatibility report at
+The Task 07F functional run passed, but its reported 15-request count was a manual
+operation estimate and was not transport-level evidence. Task 07F-A removed that counter
+and reran the authorized probe against exact `https://mautic.test`; it passed 1 test / 12
+assertions with 15 measured operation HTTP attempts and 3 separately measured cleanup
+attempts. Mautic accepted repeated add and repeated remove as successful commands, every
+read showed the exact expected membership ID set immediately, and the known DNC value
+remained unchanged. The run-owned contact was verified, deleted and confirmed absent;
+cleanup evidence reports the membership already absent. No segment definition, DNC,
+consent or customer data changed. Manual setup and sanitized evidence are recorded in
+README and the compatibility report at
 `docs/compatibility/mautic-7.2.1-oauth-static-segment.md`. No run-owned contact or
 membership remains after Task 07F; the dedicated test segment remains unchanged.
 

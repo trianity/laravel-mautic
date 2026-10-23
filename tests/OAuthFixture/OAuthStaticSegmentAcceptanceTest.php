@@ -8,6 +8,7 @@ use Trianity\LaravelMautic\Exceptions\ContactNotFound;
 use Trianity\LaravelMautic\Identity\ContactDiscoveryOutcome;
 use Trianity\LaravelMautic\MauticConnection;
 use Trianity\LaravelMautic\Tests\Support\OAuthAcceptanceHarness;
+use Trianity\LaravelMautic\Tests\Support\OAuthAcceptanceRequestBudget;
 use Trianity\LaravelMautic\Tests\Support\OAuthFixtureConfiguration;
 use Trianity\LaravelMautic\Tests\Support\OAuthFixtureEvidence;
 use Trianity\LaravelMautic\Tests\Support\OAuthStaticSegmentPreflight;
@@ -55,17 +56,10 @@ it('verifies idempotent static segment membership through the OAuth fixture', fu
         throw new RuntimeException('The required static segment ID was not retained.');
     }
 
-    $harness = new OAuthAcceptanceHarness($configuration->oauth);
+    $requestBudget = new OAuthAcceptanceRequestBudget;
+    $harness = new OAuthAcceptanceHarness($configuration->oauth, requestBudget: $requestBudget);
     $connection = $harness->connection();
-    $requests = 0;
-    $spend = static function (int $count = 1) use (&$requests): void {
-        $requests += $count;
-        if ($requests > 16) {
-            throw new RuntimeException('The OAuth static segment probe exceeded its 16-request operation budget.');
-        }
-    };
 
-    $spend();
     (new OAuthStaticSegmentPreflight)->validate($connection->api('segments')->get($segmentId), $segmentId);
 
     $runId = bin2hex(random_bytes(12));
@@ -76,12 +70,10 @@ it('verifies idempotent static segment membership through the OAuth fixture', fu
     $failure = null;
 
     try {
-        $spend();
         expect($connection->contactDiscovery()->exactEmail($email)->outcome)
             ->toBe(ContactDiscoveryOutcome::None);
 
         try {
-            $spend(2);
             $created = $connection->contactWrites()->create(ContactFields::fromArray([
                 'email' => $email,
                 'firstname' => 'OAuthSegment',
@@ -94,48 +86,40 @@ it('verifies idempotent static segment membership through the OAuth fixture', fu
         $remoteId = $created->remoteId;
         $evidence->created($remoteId);
 
-        $spend();
         $beforeContact = $connection->contactReads()->find($remoteId);
         expect($beforeContact->doNotContact->presence)->toBe(ValuePresence::Value);
         $initialDnc = $beforeContact->doNotContact->value();
 
-        $spend();
         $initialMemberships = oauthStaticSegmentMembershipIds($connection, $remoteId);
         expect($initialMemberships)->not->toContain($segmentId);
         $expectedWithTarget = array_values(array_unique(array_merge($initialMemberships, [$segmentId])));
         sort($expectedWithTarget);
 
         $membershipMayBePresent = true;
-        $spend();
         $connection->contactWrites()->addToSegment($remoteId, $segmentId);
-        $spend();
         expect(oauthStaticSegmentMembershipIds($connection, $remoteId))->toEqual($expectedWithTarget);
 
-        $spend();
         $connection->contactWrites()->addToSegment($remoteId, $segmentId);
-        $spend();
         expect(oauthStaticSegmentMembershipIds($connection, $remoteId))->toEqual($expectedWithTarget);
 
-        $spend();
         $connection->contactWrites()->removeFromSegment($remoteId, $segmentId);
-        $spend();
         expect(oauthStaticSegmentMembershipIds($connection, $remoteId))->toEqual($initialMemberships);
 
-        $spend();
         $connection->contactWrites()->removeFromSegment($remoteId, $segmentId);
-        $spend();
         expect(oauthStaticSegmentMembershipIds($connection, $remoteId))->toEqual($initialMemberships);
         $membershipMayBePresent = false;
 
-        $spend();
         $afterContact = $connection->contactReads()->find($remoteId);
         expect($afterContact->doNotContact->presence)->toBe(ValuePresence::Value)
             ->and($afterContact->doNotContact->value())->toEqual($initialDnc)
-            ->and($requests)->toBe(15);
+            ->and($requestBudget->operationAttempts())->toBeLessThanOrEqual($requestBudget->operationLimit());
     } catch (Throwable $exception) {
-        $failure = $exception;
+        $failure = $requestBudget->operationWasRejected()
+            ? new RuntimeException('OAuth acceptance operation request budget exhausted.')
+            : $exception;
     }
 
+    $requestBudget->beginCleanup();
     $cleanupFailure = null;
     if (is_int($remoteId)) {
         if ($membershipMayBePresent) {
@@ -144,7 +128,9 @@ it('verifies idempotent static segment membership through the OAuth fixture', fu
                 $evidence->membershipCleanup('removed');
             } catch (Throwable $exception) {
                 $evidence->membershipCleanup('failed');
-                $cleanupFailure = $exception;
+                $cleanupFailure = $requestBudget->cleanupWasRejected()
+                    ? new RuntimeException('OAuth acceptance cleanup request budget exhausted.')
+                    : $exception;
             }
         } else {
             $evidence->membershipCleanup('already_absent');
@@ -154,9 +140,15 @@ it('verifies idempotent static segment membership through the OAuth fixture', fu
             deleteOwnedOAuthStaticSegmentFixture($connection, $remoteId, $email, $evidence);
         } catch (Throwable $exception) {
             $evidence->cleanupFailed();
-            $cleanupFailure ??= $exception;
+            $cleanupFailure ??= $requestBudget->cleanupWasRejected()
+                ? new RuntimeException('OAuth acceptance cleanup request budget exhausted.')
+                : $exception;
         }
     }
+    $evidence->requestCounts(
+        $requestBudget->operationAttempts(),
+        $requestBudget->cleanupAttempts(),
+    );
 
     if ($failure !== null) {
         throw $failure;

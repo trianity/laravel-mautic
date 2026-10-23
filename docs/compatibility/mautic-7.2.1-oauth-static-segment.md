@@ -7,7 +7,7 @@ tokens, copied contact payloads and existing segment inventory.
 
 ## Environment and scope
 
-- Package baseline revision: `87fba07` plus the uncommitted Task 07F worktree.
+- Package baseline revision: `395101e` plus the uncommitted Task 07F-A worktree.
 - PHP CLI 8.5.12; Laravel Framework 13.37.0; Testbench 11.3.0; Pest 5.3.3.
 - Mautic API Library 4.0.0; installed Mautic core-lib 7.2.1.
 - Intended origin: exact `https://mautic.test` through the existing package-managed
@@ -26,18 +26,31 @@ tokens, copied contact payloads and existing segment inventory.
   the configured ID, exact name `lm-live-mautic721-static`, and `filters: []`. Missing,
   inaccessible, malformed, differently named and filtered segments are rejected.
 - `isGlobal` is deliberately not used to infer static behavior.
-- The prepared probe has a fixed 16-request operation budget plus bounded ownership
-  cleanup. It records a possible membership before sending add, compares membership as
-  ID sets, preserves the original failure, removes only the test-added membership and
-  deletes only after exact contact ID/email ownership verification.
+- A test-only PSR-18 decorator wraps the existing verified local HTTP client factory.
+  Every API and OAuth token `sendRequest()` attempt consumes the same 16-request
+  operation budget before forwarding; failed transport attempts also count. A request
+  beyond the limit is rejected before network activity without inspecting headers or
+  bodies.
+- Cleanup permanently switches the shared budget object to a separate 5-request
+  allowance. It cannot reset operation accounting, and operation exhaustion cannot
+  consume cleanup capacity. Cleanup errors remain explicit without replacing an earlier
+  acceptance failure.
+- The probe records a possible membership before sending add, compares membership as ID
+  sets, removes only the test-added membership and deletes only after exact contact
+  ID/email ownership verification.
 - Without its opt-in the focused suite skipped with zero assertions and no network
   access. With mutation gates enabled but no segment ID, it failed with the explicit
   missing-prerequisite error before constructing the OAuth configuration.
+- Four focused request-budget tests / 22 assertions prove limit enforcement before
+  transport, shared accounting across factory-created clients, transport-failure
+  accounting, independent cleanup capacity, secret-free errors and actual SDK
+  create-preflight plus OAuth token endpoint wiring. The combined focused offline
+  selection passed 21 tests / 58 assertions.
 - `composer check` passed: Composer metadata and formatting checks were clean, Larastan
-  level 8 reported no errors, and the default suite passed 212 tests / 1005 assertions
+  level 8 reported no errors, and the default suite passed 216 tests / 1027 assertions
   with 4 explicitly opt-in MariaDB tests skipped.
-- The authorized focused live rerun passed 1 test / 11 assertions. Its full operation
-  path used 15 of the fixed 16-request budget before bounded cleanup.
+- The authorized Task 07F-A live rerun passed 1 test / 12 assertions. The PSR-18 boundary
+  measured 15 operation attempts and 3 separate cleanup attempts.
 
 ## Live operation status
 
@@ -52,13 +65,17 @@ tokens, copied contact payloads and existing segment inventory.
 | Remove and repeated remove | Passed | Both commands succeeded and retained the original membership ID set. |
 | Membership convergence | Passed | Every immediate read returned the expected set; polling was not required. |
 | DNC preservation | Passed | The known DNC value was identical before and after membership operations. |
-| Membership/contact cleanup | Passed | Membership was already absent; exact ownership was re-read, each owned contact was deleted, and `ContactNotFound` was confirmed. |
+| Membership/contact cleanup | Passed | Membership was already absent; exact ownership was re-read, the owned contact was deleted, and `ContactNotFound` was confirmed. |
+| Operation request budget | Passed | 15 actual PSR-18 attempts used from the fixed limit of 16. |
+| Cleanup request budget | Passed | 3 actual PSR-18 attempts used from the independent allowance of 5. |
 
-The first live execution completed the server operations and cleanup but failed its local
-test assertion because it expected the request counter to equal 16. The observed complete
-path uses 15 requests; correcting that test-only accounting made the immediate rerun pass.
-Both execution evidence records report `status: deleted` and
-`membership_cleanup: already_absent`. No customer contact was selected or changed.
+The earlier Task 07F implementation manually incremented an estimated operation counter.
+Its successful functional results remain valid, but its reported 15 requests were not
+transport-level evidence and did not account for possible OAuth refreshes or SDK-added
+requests. Task 07F-A removed those estimates. The latest ignored evidence record reports
+`operation_request_attempts: 15`, `cleanup_request_attempts: 3`, `status: deleted` and
+`membership_cleanup: already_absent`, all measured at the actual PSR-18 boundary. No
+customer contact was selected or changed.
 
 ## Dedicated fixture setup
 

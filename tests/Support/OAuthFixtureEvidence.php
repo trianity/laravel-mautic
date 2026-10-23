@@ -64,6 +64,13 @@ final class OAuthFixtureEvidence
         $this->persist();
     }
 
+    public function requestCounts(int $operationAttempts, int $cleanupAttempts): void
+    {
+        $this->evidence['operation_request_attempts'] = $operationAttempts;
+        $this->evidence['cleanup_request_attempts'] = $cleanupAttempts;
+        $this->persist();
+    }
+
     public function path(): string
     {
         return $this->path;

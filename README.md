@@ -644,7 +644,12 @@ Prepare the segment manually in the local Mautic UI before setting the ignored I
 The probe reads the configured definition before creating a contact and requires the
 exact ID, exact name and an explicitly empty API `filters` array. Visibility alone is
 not treated as evidence that a segment is static. Without the configured ID it fails
-before OAuth configuration or mutation.
+before OAuth configuration or mutation. A test-only PSR-18 decorator measures every
+forwarded API or OAuth token `sendRequest()` attempt against one shared 16-request
+operation limit. Cleanup then switches the same budget object to an independent
+5-request allowance, so operation exhaustion cannot consume or replenish cleanup
+capacity. Rejected requests never reach the verified TLS client, and neither request
+headers nor bodies are inspected or logged by the budget.
 
 ## Normalized contact reads
 

@@ -13,6 +13,7 @@ use Illuminate\Encryption\Encrypter;
 use Psr\Http\Message\ResponseInterface;
 use RuntimeException;
 use Trianity\LaravelMautic\Configuration\ConnectionConfig;
+use Trianity\LaravelMautic\Contracts\HttpClientFactory;
 use Trianity\LaravelMautic\Data\OAuthToken;
 use Trianity\LaravelMautic\Data\OAuthTokenRecord;
 use Trianity\LaravelMautic\MauticConnection;
@@ -49,11 +50,12 @@ final class OAuthAcceptanceHarness
 
     private readonly OAuth2Service $oauth;
 
-    private readonly VerifiedLocalHttpClientFactory $httpClients;
+    private readonly HttpClientFactory $httpClients;
 
     public function __construct(
         public readonly OAuthAcceptanceConfiguration $environment,
         ?string $storageDirectory = null,
+        ?OAuthAcceptanceRequestBudget $requestBudget = null,
     ) {
         $this->storageDirectory = $storageDirectory ?? dirname(__DIR__).'/.oauth-acceptance';
         $this->contextPath = $this->storageDirectory.'/authorization-context.json';
@@ -83,7 +85,10 @@ final class OAuthAcceptanceHarness
         $this->tokens = new DatabaseOAuthTokenRepository($this->database, $encrypter);
         $states = new DatabaseOAuthStateRepository($this->database, $clock);
         $lock = new DatabaseRefreshLock($this->database, $clock);
-        $this->httpClients = new VerifiedLocalHttpClientFactory($environment->caBundle);
+        $verifiedHttpClients = new VerifiedLocalHttpClientFactory($environment->caBundle);
+        $this->httpClients = $requestBudget === null
+            ? $verifiedHttpClients
+            : new BudgetedHttpClientFactory($verifiedHttpClients, $requestBudget);
         $endpoint = new HttpOAuthTokenEndpoint(
             $this->config,
             $this->httpClients,
