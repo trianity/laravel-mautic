@@ -8,16 +8,21 @@ use Trianity\LaravelMautic\Contracts\Clock;
 use Trianity\LaravelMautic\Contracts\ContactSyncTransport;
 use Trianity\LaravelMautic\Contracts\StaticSegmentGateway;
 use Trianity\LaravelMautic\Contracts\SubscriptionTransport;
+use Trianity\LaravelMautic\Data\DoNotContactEntry;
+use Trianity\LaravelMautic\Data\DoNotContactReason;
 use Trianity\LaravelMautic\Data\SegmentMemberships;
+use Trianity\LaravelMautic\Data\ValuePresence;
 use Trianity\LaravelMautic\Exceptions\ContactNotFound;
 use Trianity\LaravelMautic\Exceptions\SegmentNotFound;
 use Trianity\LaravelMautic\Identity\DatabaseContactMappingRepository;
 use Trianity\LaravelMautic\Identity\LocalContactReference;
 use Trianity\LaravelMautic\MauticConnection;
 use Trianity\LaravelMautic\Outbox\ContactOutbox;
+use Trianity\LaravelMautic\Outbox\ContactSyncCommand;
 use Trianity\LaravelMautic\Outbox\DatabaseOutboxStore;
 use Trianity\LaravelMautic\Outbox\OutboxDispatcher;
 use Trianity\LaravelMautic\Outbox\OutboxProcessor;
+use Trianity\LaravelMautic\Restriction\ManualEmailBlock;
 use Trianity\LaravelMautic\Segment\StaticSegmentDefinition;
 use Trianity\LaravelMautic\Subscription\DatabaseSubscriptionStore;
 use Trianity\LaravelMautic\Subscription\SegmentTarget;
@@ -40,7 +45,7 @@ it('verifies durable subscription delivery through OAuth', function () {
     $configuration = OAuthFixtureConfiguration::staticSegmentFromEnvironment();
     $preparedSegmentId = $configuration->staticSegmentId
         ?? throw new RuntimeException('The prepared static segment ID is required.');
-    $budget = new OAuthAcceptanceRequestBudget(operationLimit: 28, cleanupLimit: 10);
+    $budget = new OAuthAcceptanceRequestBudget(operationLimit: 34, cleanupLimit: 10);
     $harness = new OAuthAcceptanceHarness($configuration->oauth, requestBudget: $budget);
     $connection = $harness->connection();
     (new OAuthStaticSegmentPreflight)->validate($connection->api('segments')->get($preparedSegmentId), $preparedSegmentId);
@@ -67,9 +72,10 @@ it('verifies durable subscription delivery through OAuth', function () {
     $mappings = new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'oauth-subscription');
     $outboxStore = new DatabaseOutboxStore(DB::getFacadeRoot(), $clock, 'oauth-subscription');
     $subscriptionStore = new DatabaseSubscriptionStore(DB::getFacadeRoot(), $clock, 'oauth-subscription');
+    $contactOutbox = new ContactOutbox($outboxStore, new OutboxDispatcher(Queue::getFacadeRoot(), $outboxStore));
     $delivery = new SubscriptionDelivery(
         $subscriptionStore,
-        new ContactOutbox($outboxStore, new OutboxDispatcher(Queue::getFacadeRoot(), $outboxStore)),
+        $contactOutbox,
         $mappings,
         new SubscriptionDispatcher(Queue::getFacadeRoot()),
     );
@@ -111,29 +117,56 @@ it('verifies durable subscription delivery through OAuth', function () {
     $local = new LocalContactReference('oauth-subscription-fixture', $runId);
     $remoteContactId = null;
     $createdSegmentId = null;
-    $initialDnc = null;
+    $initialRestriction = null;
     $failure = null;
 
     try {
+        $bootstrap = ContactSyncCommand::create(
+            'subscription-bootstrap-'.$runId,
+            'oauth-acceptance',
+            $local,
+            1,
+            ContactFields::fromArray(['email' => $email, 'firstname' => 'RestrictionFixture'], ['email', 'firstname']),
+            'oauth-subscription-fixture',
+        );
+        DB::connection('oauth-subscription')->transaction(fn () => $contactOutbox->record($bootstrap));
+        $outboxProcessor->process($bootstrap->operationId);
+        $mapping = $mappings->find('oauth-acceptance', $local)
+            ?? throw new RuntimeException('The live contact mapping was not created by the public contact operation.');
+        $remoteContactId = $mapping->remoteId;
+        $connection->restrictionWrites()->blockEmail(
+            $remoteContactId,
+            ManualEmailBlock::record('Subscription DNC preservation '.$runId, $clock),
+        );
+        $restrictedContact = $connection->contactReads()->find($remoteContactId);
+        if ($restrictedContact->doNotContact->presence !== ValuePresence::Value) {
+            throw new RuntimeException('The disposable contact does not expose its manual restriction.');
+        }
+        $manualEntries = array_values(array_filter(
+            $restrictedContact->doNotContact->value(),
+            static fn (DoNotContactEntry $entry): bool => $entry->channel === 'email'
+                && $entry->knownReason() === DoNotContactReason::Manual,
+        ));
+        if (count($manualEntries) !== 1) {
+            throw new RuntimeException('The disposable contact requires one exact manual email restriction.');
+        }
+        $initialRestriction = $manualEntries[0];
+
         $firstCommand = new SubscriptionCommand(
-            'oauth-acceptance', $local, 'prepared-'.$runId, 1,
-            ContactFields::fromArray(['email' => $email, 'firstname' => 'SubscriptionOne'], ['email', 'firstname']),
+            'oauth-acceptance', $local, 'prepared-'.$runId, 2,
+            ContactFields::fromArray(['firstname' => 'SubscriptionOne'], ['firstname']),
             SegmentTarget::existing('prepared-'.$preparedSegmentId, $preparedSegmentId),
         );
         $first = DB::connection('oauth-subscription')->transaction(fn () => $delivery->record($firstCommand));
         $outboxProcessor->process($first->contactOperationId);
         $subscriptionProcessor->process($first->operationId);
-        $mapping = $mappings->find('oauth-acceptance', $local)
-            ?? throw new RuntimeException('The live contact mapping was not created.');
-        $remoteContactId = $mapping->remoteId;
-        $initialDnc = $connection->contactReads()->find($remoteContactId)->doNotContact;
         expect($subscriptionStore->get($first->operationId)?->status)->toBe(SubscriptionStatus::Completed);
 
         $replay = DB::connection('oauth-subscription')->transaction(fn () => $delivery->record($firstCommand));
         expect($replay->operationId)->toBe($first->operationId);
 
         $createdCommand = new SubscriptionCommand(
-            'oauth-acceptance', $local, 'created-'.$runId, 2,
+            'oauth-acceptance', $local, 'created-'.$runId, 3,
             ContactFields::fromArray(['firstname' => 'SubscriptionTwo'], ['firstname']),
             SegmentTarget::createIfAbsent('created-'.$runId, new StaticSegmentDefinition($createdName, $createdAlias)),
         );
@@ -142,9 +175,18 @@ it('verifies durable subscription delivery through OAuth', function () {
         $subscriptionProcessor->process($created->operationId);
         $createdRecord = $subscriptionStore->get($created->operationId);
         $createdSegmentId = $createdRecord?->remoteSegmentId;
+        $finalContact = $connection->contactReads()->find($remoteContactId);
+        $finalRestrictions = $finalContact->doNotContact->presence === ValuePresence::Value
+            ? array_values(array_filter(
+                $finalContact->doNotContact->value(),
+                static fn (DoNotContactEntry $entry): bool => $entry->channel === 'email'
+                    && $entry->knownReason() === DoNotContactReason::Manual,
+            )) : [];
         expect($createdRecord?->status)->toBe(SubscriptionStatus::Completed)
             ->and($createdSegmentId)->toBeInt()
-            ->and($connection->contactReads()->find($remoteContactId)->doNotContact)->toEqual($initialDnc);
+            ->and($finalContact->field('firstname')->value())->toBe('SubscriptionTwo')
+            ->and($finalRestrictions)->toHaveCount(1)
+            ->and($finalRestrictions[0])->toEqual($initialRestriction);
         $evidence->completed();
     } catch (Throwable $exception) {
         $failure = $exception;
@@ -178,7 +220,7 @@ it('verifies durable subscription delivery through OAuth', function () {
         $evidence->cleanup('deleted');
     }
     $evidence->requestCounts($budget->operationAttempts(), $budget->cleanupAttempts());
-    expect($budget->operationAttempts())->toBeLessThanOrEqual(28)
+    expect($budget->operationAttempts())->toBeLessThanOrEqual(34)
         ->and($budget->cleanupAttempts())->toBeLessThanOrEqual(10);
 
     if ($failure !== null) {

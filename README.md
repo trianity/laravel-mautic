@@ -378,12 +378,17 @@ silently edited or converted from dynamic to static.
 Run the normal contact outbox worker/poller and the subscription job queue, and schedule
 `SubscriptionPoller::recover()` for lost dispatches. Inspect `SubscriptionRecord` for
 pending, completed, failed, blocked or ambiguous state. `SubscriptionOperator` can
-resume a definite membership-write failure, or associate a separately verified segment
-after an ambiguous create. It never blindly replays an uncertain create or membership.
+resume a repaired contact prerequisite, confirm an observed membership, resume a definite
+membership-write failure, authorize replay only with explicit prior-request attestation,
+or associate a separately verified segment after an ambiguous create. Operator recovery is
+audited with actor, reason, prior state and outcome and derives connection/segment identity
+from the stored intent. It never blindly replays an uncertain create or membership.
 
 The worker waits for the durable contact revision and active mapping, provisions and
-persists the segment association under a shared database lease, then adds and reads back
-membership. It does not release DNC, renew consent, submit a form, start a campaign or
+persists the segment association under shared connection/key provisioning state, then adds
+and reads back membership. A durable marker precedes create; expiry or worker loss leaves a
+key-level blocker that a fresh event, restart or poller cannot bypass. Known create IDs are
+retained before association for verified recovery. It does not release DNC, renew consent, submit a form, start a campaign or
 send mail. Segment membership and campaign execution are separate Mautic behaviors.
 Mautic supplies no conditional segment-create primitive, so the package coordinates its
 own workers but cannot fence unrelated external creators. The local flow is resumable,

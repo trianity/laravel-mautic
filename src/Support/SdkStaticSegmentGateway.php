@@ -7,8 +7,8 @@ namespace Trianity\LaravelMautic\Support;
 use Mautic\Api\Segments;
 use Trianity\LaravelMautic\Contracts\StaticSegmentGateway;
 use Trianity\LaravelMautic\Exceptions\InvalidReadRequest;
-use Trianity\LaravelMautic\Exceptions\InvalidWriteRequest;
 use Trianity\LaravelMautic\Exceptions\SegmentConflict;
+use Trianity\LaravelMautic\Exceptions\SegmentCreateEvidence;
 use Trianity\LaravelMautic\Read\ReadOperation;
 use Trianity\LaravelMautic\Segment\StaticSegment;
 use Trianity\LaravelMautic\Segment\StaticSegmentDefinition;
@@ -87,9 +87,23 @@ final readonly class SdkStaticSegmentGateway implements StaticSegmentGateway
         if (! array_key_exists('list', $response)) {
             $this->boundary->unexpectedWrite($operation, $this->connection);
         }
-        $segment = $this->map($response['list'], ReadOperation::FindSegment);
+        $remoteId = is_array($response['list'])
+            ? $this->boundary->nonNegativeInteger($response['list']['id'] ?? null)
+            : null;
+        try {
+            $segment = $this->map($response['list'], ReadOperation::FindSegment);
+        } catch (\Throwable $exception) {
+            if ($remoteId !== null && $remoteId > 0) {
+                throw new SegmentCreateEvidence($remoteId, previous: $exception);
+            }
+
+            throw $exception;
+        }
         if ($segment->name !== $definition->name || $segment->alias !== $definition->alias || ! $segment->suitable()) {
-            throw new InvalidWriteRequest('The created Mautic segment does not match the requested static definition.');
+            throw new SegmentCreateEvidence(
+                $segment->remoteId,
+                'The created Mautic segment does not match the requested static definition.',
+            );
         }
 
         return $segment;

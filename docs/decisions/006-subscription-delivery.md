@@ -44,11 +44,18 @@ DNC state.
 
 ## Concurrency and failures
 
-Subscription rows use database leases. Segment provisioning additionally uses a shared
-connection/key lease, so workers for different events but the same segment key coordinate
-through durable storage. The association is checked again after lease acquisition.
-This prevents coordinated package workers from dispatching two creates; it does not claim
-protection against unrelated external creators because Mautic supplies no conditional
+Subscription reservations include an owner, monotonically increasing generation and exact
+expiry. Acquisition matches the complete observed reservation, readback is bound to the
+new reservation, and every transition requires that unexpired identity. A stale worker
+cannot overwrite or borrow a replacement reservation.
+
+Segment provisioning additionally persists connection/key state. Safe resolution work may
+be taken over after expiry, but a durable `create_in_flight` marker is written before the
+request. Its expiry becomes key-level ambiguity rather than permission to create again.
+Every event using that exact connection/key remains blocked across workers, restarts and
+poller runs until verified operator recovery clears it. This prevents coordinated package
+workers from dispatching a second create while the first can still complete; it does not
+claim protection against unrelated external creators because Mautic supplies no conditional
 unique-create contract.
 
 Segment lookup is bounded and validates exact alias, publication and empty filters.
@@ -56,12 +63,21 @@ Multiple candidates, a conflicting stored association, dynamic or unpublished se
 are terminal typed conflicts; the package never picks the first result or edits an
 existing segment. Successful create identity is persisted before membership.
 
-Potentially applied contact or segment creates are never blindly replayed. Any known
-remote ID is retained as evidence and the intent becomes actionable `ambiguous` state.
+Potentially applied contact or segment creates are never blindly replayed. A create response
+ID is durably captured before association, with a conservative fallback evidence write if
+the first write fails. A later response-validation, association or local-completion failure
+retains that ID on the key-level blocker and intent where storage remains available. If
+storage itself remains unavailable, the worker reports that limitation and leaves the
+durable in-flight marker blocking recreation rather than claiming evidence was persisted.
 Membership is read before mutation and read again after success. A membership mutation
 with uncertain outcome is not automatically replayed; an operator must reconcile it.
 Unambiguous terminal membership failure can be explicitly returned to pending without
-replaying completed prerequisites.
+replaying completed prerequisites. Recovery reloads the stored identity and writes an audit
+containing actor, bounded reason, prior state and outcome. Contact recovery verifies the
+completed outbox and active mapping. Membership uncertainty can be completed by observing
+the exact remote membership; replay requires attestation that the earlier request cannot
+complete. Segment-create recovery verifies the exact remote segment and requires equivalent
+attestation before clearing the connection/key blocker.
 
 No database transaction spans an HTTP request. The overall flow is resumable and locally
 idempotent, but it is neither remotely atomic nor exactly once.

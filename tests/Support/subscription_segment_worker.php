@@ -21,11 +21,11 @@ while ($capsule->table('subscription_ready')->count() < 2 && microtime(true) < $
 }
 
 $store = new DatabaseSubscriptionStore($capsule->getDatabaseManager(), new SystemClock);
-$acquired = $store->acquireSegment('main', 'shared-business-key', $worker, 5);
-if ($acquired) {
+$claim = $store->acquireSegment('main', 'shared-business-key', 'operation-'.$worker, $worker, 5);
+if ($claim !== null) {
     $capsule->table('subscription_create_attempts')->insert(['worker' => $worker]);
     usleep(200_000);
     $store->associateSegment('main', 'shared-business-key', 91, str_repeat('a', 64));
-    $store->releaseSegment('main', 'shared-business-key', $worker);
+    $store->releaseSegment($claim);
 }
-$capsule->table('subscription_results')->insert(['worker' => $worker, 'acquired' => $acquired]);
+$capsule->table('subscription_results')->insert(['worker' => $worker, 'acquired' => $claim !== null]);

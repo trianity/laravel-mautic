@@ -25,6 +25,7 @@ final readonly class SubscriptionRecord
         public ?int $remoteContactId,
         public ?int $remoteSegmentId,
         public ?string $leaseOwner,
+        public int $leaseGeneration,
         public ?int $leaseExpiresAt,
         public ?string $lastErrorCode,
     ) {}

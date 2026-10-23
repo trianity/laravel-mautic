@@ -36,6 +36,7 @@ use Trianity\LaravelMautic\Subscription\SubscriptionDispatcher;
 use Trianity\LaravelMautic\Subscription\SubscriptionOperator;
 use Trianity\LaravelMautic\Subscription\SubscriptionPoller;
 use Trianity\LaravelMautic\Subscription\SubscriptionProcessor;
+use Trianity\LaravelMautic\Subscription\SubscriptionStage;
 use Trianity\LaravelMautic\Subscription\SubscriptionStatus;
 use Trianity\LaravelMautic\Support\ManagerSubscriptionTransport;
 use Trianity\LaravelMautic\Write\ContactFields;
@@ -144,7 +145,9 @@ it('publishes one canonical reversible subscription migration', function () {
         ->and(array_key_first($published))->toEndWith('create_mautic_subscription_delivery.php.stub')
         ->and($schema->hasTable('mautic_subscription_intents'))->toBeTrue()
         ->and($schema->hasTable('mautic_subscription_segments'))->toBeTrue()
-        ->and($schema->hasTable('mautic_subscription_segment_locks'))->toBeTrue();
+        ->and($schema->hasTable('mautic_subscription_segment_locks'))->toBeTrue()
+        ->and($schema->hasTable('mautic_subscription_audits'))->toBeTrue()
+        ->and($schema->hasColumn('mautic_subscription_intents', 'lease_generation'))->toBeTrue();
 });
 
 it('requires the host transaction and rolls both contact and delivery intent back', function () {
@@ -337,7 +340,8 @@ it('retains completed contact work and explicitly resumes a definite membership 
     expect($store->get($record->operationId)?->status)->toBe(SubscriptionStatus::Failed)
         ->and($outbox->get($record->contactOperationId)?->status->value)->toBe('completed');
 
-    (new SubscriptionOperator($store, $transport))->resumeMembershipFailure($record->operationId);
+    (new SubscriptionOperator($store, $transport, $outbox, $mappings))
+        ->resumeMembershipFailure($record->operationId, 'test-operator', 'definite-write-failure');
     useSubscriptionResponses([
         new Response(200, ['Content-Type' => 'application/json'], '{"total":0,"lists":[]}'),
         new Response(200, ['Content-Type' => 'application/json'], '{"success":1}'),
@@ -372,4 +376,198 @@ it('blocks an uncertain segment create without blind recreation', function () {
     expect($store->get($operationId)?->status)->toBe(SubscriptionStatus::Ambiguous)
         ->and($store->get($operationId)?->lastErrorCode)->toBe('segment_create_outcome_ambiguous')
         ->and($history)->toHaveCount(2);
+});
+
+it('blocks every event for a segment key after an uncertain create', function () {
+    Queue::fake();
+    $history = [];
+    useSubscriptionResponses([
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":0,"lists":[]}'),
+        new ConnectException('timeout', new Request('POST', 'https://mautic.example.test/api/segments/new')),
+    ], $history);
+    [$delivery, $store] = subscriptionServices();
+    $first = makeSubscriptionContactReady($delivery, 'ambiguous-key-first');
+    $outbox = new DatabaseOutboxStore(DB::getFacadeRoot(), subscriptionClock(), 'subscription-test');
+    $mappings = new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'subscription-test');
+    $processor = new SubscriptionProcessor(
+        $store, $outbox, $mappings, new ManagerSubscriptionTransport(app(MauticManager::class)),
+    );
+    $processor->process($first);
+
+    $secondCommand = new SubscriptionCommand(
+        'main', new LocalContactReference('tenant:acme:contact', '42'), 'ambiguous-key-second', 2,
+        ContactFields::fromArray(['email' => 'subscriber@example.test'], ['email']),
+        SegmentTarget::createIfAbsent(
+            'offer-74-paid', new StaticSegmentDefinition('Offer 74 paid subscribers', 'owned-offer-74-paid'),
+        ),
+    );
+    $second = DB::connection('subscription-test')->transaction(fn () => $delivery->record($secondCommand));
+    DB::connection('subscription-test')->table('mautic_outbox_commands')
+        ->where('operation_id', $second->contactOperationId)
+        ->update(['status' => 'completed', 'delivery_stage' => 'remote_succeeded', 'remote_id' => 42]);
+    $processor->process($second->operationId);
+
+    expect($store->get($second->operationId)?->status)->toBe(SubscriptionStatus::Ambiguous)
+        ->and($store->get($second->operationId)?->lastErrorCode)->toBe('segment_key_provisioning_ambiguous')
+        ->and($history)->toHaveCount(2);
+});
+
+it('uses exact claim generations and rejects stale transitions and replaced readback', function () {
+    Queue::fake();
+    [$delivery, $store] = subscriptionServices();
+    $record = DB::connection('subscription-test')->transaction(fn () => $delivery->record(subscriptionCommand('claim-generation')));
+    $first = $store->begin($record->operationId, 'first-owner', 30);
+    expect($first)->not->toBeNull();
+    DB::connection('subscription-test')->table('mautic_subscription_intents')
+        ->where('operation_id', $record->operationId)->update(['lease_expires_at' => 1_999]);
+    $replacement = $store->begin($record->operationId, 'replacement-owner', 30);
+    expect($replacement?->generation)->toBe(2)
+        ->and(fn () => $store->pending(
+            $first,
+            SubscriptionStage::Recorded,
+        ))->toThrow(RuntimeException::class);
+
+    $otherCommand = new SubscriptionCommand(
+        'main', new LocalContactReference('tenant:acme:contact', '43'), 'claim-readback', 1,
+        ContactFields::fromArray(['email' => 'other@example.test'], ['email']),
+        SegmentTarget::createIfAbsent(
+            'other-key', new StaticSegmentDefinition('Other segment', 'other-segment'),
+        ),
+    );
+    $other = DB::connection('subscription-test')->transaction(fn () => $delivery->record($otherCommand));
+    DB::connection('subscription-test')->unprepared(<<<'SQL'
+CREATE TRIGGER replace_subscription_claim AFTER UPDATE OF lease_owner ON mautic_subscription_intents
+WHEN NEW.lease_owner = 'winner'
+BEGIN
+    UPDATE mautic_subscription_intents
+    SET lease_owner = 'interloper', lease_generation = NEW.lease_generation + 1
+    WHERE operation_id = NEW.operation_id;
+END
+SQL);
+    expect($store->begin($other->operationId, 'winner', 30))->toBeNull();
+});
+
+it('retains a created remote ID when its first evidence write fails', function () {
+    Queue::fake();
+    useSubscriptionResponses([
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":0,"lists":[]}'),
+        new Response(201, ['Content-Type' => 'application/json'], '{"list":{"id":73,"name":"Offer 74 paid subscribers","alias":"owned-offer-74-paid","isPublished":true,"isGlobal":true,"filters":[]}}'),
+    ]);
+    [$delivery, $store] = subscriptionServices();
+    $operationId = makeSubscriptionContactReady($delivery, 'evidence-fallback');
+    DB::connection('subscription-test')->unprepared(<<<'SQL'
+CREATE TRIGGER fail_primary_segment_evidence BEFORE UPDATE OF remote_id ON mautic_subscription_segment_locks
+WHEN NEW.remote_id IS NOT NULL AND NEW.last_error_code IS NULL
+BEGIN
+    SELECT RAISE(ABORT, 'injected first evidence failure');
+END
+SQL);
+    (new SubscriptionProcessor(
+        $store,
+        new DatabaseOutboxStore(DB::getFacadeRoot(), subscriptionClock(), 'subscription-test'),
+        new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'subscription-test'),
+        new ManagerSubscriptionTransport(app(MauticManager::class)),
+    ))->process($operationId);
+    $block = $store->segmentProvisioningBlock('main', 'offer-74-paid');
+
+    expect($store->get($operationId)?->status)->toBe(SubscriptionStatus::Ambiguous)
+        ->and($store->get($operationId)?->remoteSegmentId)->toBe(73)
+        ->and($block?->state)->toBe('ambiguous')
+        ->and((int) $block?->remote_id)->toBe(73);
+});
+
+it('verifies and audits explicit recovery of a known created segment', function () {
+    Queue::fake();
+    useSubscriptionResponses([
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":0,"lists":[]}'),
+        new Response(201, ['Content-Type' => 'application/json'], '{"list":{"id":81,"name":"Offer 74 paid subscribers","alias":"owned-offer-74-paid","isPublished":true,"isGlobal":true,"filters":[]}}'),
+    ]);
+    [$delivery, $store] = subscriptionServices();
+    $operationId = makeSubscriptionContactReady($delivery, 'association-recovery');
+    DB::connection('subscription-test')->unprepared(<<<'SQL'
+CREATE TRIGGER fail_segment_association BEFORE INSERT ON mautic_subscription_segments
+BEGIN
+    SELECT RAISE(ABORT, 'injected association failure');
+END
+SQL);
+    $outbox = new DatabaseOutboxStore(DB::getFacadeRoot(), subscriptionClock(), 'subscription-test');
+    $mappings = new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'subscription-test');
+    (new SubscriptionProcessor(
+        $store, $outbox, $mappings, new ManagerSubscriptionTransport(app(MauticManager::class)),
+    ))->process($operationId);
+    DB::connection('subscription-test')->unprepared('DROP TRIGGER fail_segment_association');
+
+    useSubscriptionResponses([
+        new Response(200, ['Content-Type' => 'application/json'], '{"list":{"id":81,"name":"Offer 74 paid subscribers","alias":"owned-offer-74-paid","isPublished":true,"isGlobal":true,"filters":[]}}'),
+    ]);
+    app()->forgetInstance(MauticManager::class);
+    (new SubscriptionOperator(
+        $store, new ManagerSubscriptionTransport(app(MauticManager::class)), $outbox, $mappings,
+    ))->associateAmbiguousCreate(
+        $operationId, 81, 'test-operator', 'verified-owned-segment', true,
+    );
+
+    expect($store->associatedSegment('main', 'offer-74-paid'))->toBe(81)
+        ->and($store->segmentProvisioningBlock('main', 'offer-74-paid'))->toBeNull()
+        ->and($store->get($operationId)?->status)->toBe(SubscriptionStatus::Pending)
+        ->and($store->audits($operationId))->toHaveCount(1)
+        ->and($store->audits($operationId)[0]->actor)->toBe('test-operator');
+});
+
+it('verifies repaired contact prerequisites before audited resume', function () {
+    Queue::fake();
+    [$delivery, $store] = subscriptionServices();
+    $operationId = makeSubscriptionContactReady($delivery, 'contact-recovery');
+    DB::connection('subscription-test')->table('mautic_subscription_intents')
+        ->where('operation_id', $operationId)->update([
+            'status' => 'ambiguous', 'stage' => 'recorded', 'last_error_code' => 'contact_ambiguous',
+        ]);
+    $outbox = new DatabaseOutboxStore(DB::getFacadeRoot(), subscriptionClock(), 'subscription-test');
+    $mappings = new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'subscription-test');
+    (new SubscriptionOperator(
+        $store, new ManagerSubscriptionTransport(app(MauticManager::class)), $outbox, $mappings,
+    ))->resumeContactPrerequisite($operationId, 'test-operator', 'contact-repaired');
+
+    expect($store->get($operationId)?->status)->toBe(SubscriptionStatus::Pending)
+        ->and($store->get($operationId)?->stage->value)->toBe('contact_ready')
+        ->and($store->get($operationId)?->remoteContactId)->toBe(42)
+        ->and($store->audits($operationId)[0]->outcome)->toBe('contact_prerequisite_verified');
+});
+
+it('completes membership uncertainty only after observing the exact remote membership', function () {
+    Queue::fake();
+    useSubscriptionResponses([
+        new Response(200, ['Content-Type' => 'application/json'], '{"list":{"id":9,"name":"Existing","alias":"existing","isPublished":true,"isGlobal":true,"filters":[]}}'),
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":0,"lists":[]}'),
+        new Response(200, ['Content-Type' => 'application/json'], '{"success":1}'),
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":0,"lists":[]}'),
+    ]);
+    [$delivery, $store] = subscriptionServices();
+    $command = new SubscriptionCommand(
+        'main', new LocalContactReference('tenant:acme:contact', '42'), 'membership-confirm', 1,
+        ContactFields::fromArray(['email' => 'subscriber@example.test'], ['email']),
+        SegmentTarget::existing('membership-confirm-segment', 9),
+    );
+    $record = DB::connection('subscription-test')->transaction(fn () => $delivery->record($command));
+    DB::connection('subscription-test')->table('mautic_outbox_commands')
+        ->where('operation_id', $record->contactOperationId)
+        ->update(['status' => 'completed', 'delivery_stage' => 'remote_succeeded', 'remote_id' => 42]);
+    $mappings = new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'subscription-test');
+    $mappings->claim('main', new LocalContactReference('tenant:acme:contact', '42'), 42);
+    $outbox = new DatabaseOutboxStore(DB::getFacadeRoot(), subscriptionClock(), 'subscription-test');
+    (new SubscriptionProcessor(
+        $store, $outbox, $mappings, new ManagerSubscriptionTransport(app(MauticManager::class)),
+    ))->process($record->operationId);
+    expect($store->get($record->operationId)?->lastErrorCode)->toBe('membership_not_verified');
+
+    useSubscriptionResponses([
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":1,"lists":{"9":{"id":9,"name":"Existing","alias":"existing"}}}'),
+    ]);
+    app()->forgetInstance(MauticManager::class);
+    (new SubscriptionOperator(
+        $store, new ManagerSubscriptionTransport(app(MauticManager::class)), $outbox, $mappings,
+    ))->confirmMembership($record->operationId, 'test-operator', 'membership-observed');
+
+    expect($store->get($record->operationId)?->status)->toBe(SubscriptionStatus::Completed)
+        ->and($store->audits($record->operationId)[0]->outcome)->toBe('remote_membership_verified');
 });

@@ -54,6 +54,35 @@ scope and the stronger possible future design.
 
 ## Verification
 
+## Subscription concurrency and recovery correction — 2026-10-23
+
+Task 07J-A replaces status-only subscription claims with exact owner/generation/expiry
+reservations and turns segment provisioning into durable connection/key state. A create
+in-flight marker precedes the HTTP request; expiry, process loss or uncertain completion
+blocks every event for that key until verified operator recovery. Returned segment IDs are
+captured before association and retained through response-validation, first-evidence-write
+or association failure where storage remains available.
+
+Operator recovery now verifies repaired contact prerequisites, observed membership or an
+exact remote segment before changing state. Uncertain replay and segment-create resolution
+require explicit prior-request attestation where the old request could still complete.
+Every supported recovery stores bounded actor/reason, prior state and outcome without contact
+data. The canonical subscription migration adds claim generations, durable provisioning
+state and recovery audits; no development upgrade bridge was added.
+
+Offline focused coverage passed 24 tests / 165 assertions, including fault injection and
+genuine multi-process SQLite tests driving the actual processor across create lease expiry
+and immediate process loss after the durable marker. The
+separately configured MariaDB schema/transaction test passed 1 test / 11 assertions; it is
+not a MariaDB multi-process race. Final `composer check` passed Pint, Larastan level 8 and
+305 tests / 1375 assertions with five opt-in MariaDB tests skipped in the default run.
+
+The corrected OAuth Mautic 7.2.1 acceptance passed 1 test / 16 assertions with 18 operation
+and six cleanup attempts. A public contact operation established the mapping, a non-empty
+manual email restriction was installed before subscription, both durable subscription events
+completed, and exact restriction metadata remained unchanged. Ownership cleanup deleted the
+run-owned contact and segment and confirmed not-found. No host-application integration ran.
+
 ## Durable subscription delivery — 2026-10-23
 
 Task 07J adds the concrete accepted-subscription flow without model observers or host

@@ -10,7 +10,7 @@ use GuzzleHttp\Psr7\Response;
 use Psr\Http\Client\ClientInterface;
 use Trianity\LaravelMautic\Configuration\ConnectionConfig;
 use Trianity\LaravelMautic\Contracts\HttpClientFactory;
-use Trianity\LaravelMautic\Exceptions\InvalidWriteRequest;
+use Trianity\LaravelMautic\Exceptions\SegmentCreateEvidence;
 use Trianity\LaravelMautic\MauticManager;
 use Trianity\LaravelMautic\Segment\StaticSegmentDefinition;
 
@@ -81,5 +81,18 @@ it('rejects a create response that is dynamic unpublished or does not match the 
 
     expect(fn () => app(MauticManager::class)->connection()->staticSegments()->create(
         new StaticSegmentDefinition('Paid subscribers', 'paid-subscribers'),
-    ))->toThrow(InvalidWriteRequest::class);
+    ))->toThrow(fn (SegmentCreateEvidence $exception) => $exception->remoteId === 9);
+});
+
+it('retains a valid created ID when the remaining response representation is malformed', function () {
+    useStaticSegmentResponses([
+        new Response(201, ['Content-Type' => 'application/json'], json_encode(['list' => [
+            'id' => 73, 'name' => null, 'alias' => 'paid-subscribers', 'isPublished' => true,
+            'isGlobal' => true, 'filters' => [],
+        ]], JSON_THROW_ON_ERROR)),
+    ]);
+
+    expect(fn () => app(MauticManager::class)->connection()->staticSegments()->create(
+        new StaticSegmentDefinition('Paid subscribers', 'paid-subscribers'),
+    ))->toThrow(fn (SegmentCreateEvidence $exception) => $exception->remoteId === 73);
 });

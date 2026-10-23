@@ -34,6 +34,7 @@ return new class extends Migration
             $table->unsignedBigInteger('remote_contact_id')->nullable();
             $table->unsignedBigInteger('remote_segment_id')->nullable();
             $table->string('lease_owner', 64)->nullable();
+            $table->unsignedBigInteger('lease_generation')->default(0);
             $table->unsignedBigInteger('lease_expires_at')->nullable();
             $table->string('last_error_code', 64)->nullable();
             $table->unsignedBigInteger('completed_at')->nullable();
@@ -56,8 +57,30 @@ return new class extends Migration
 
         $schema->create(config('mautic.subscription.locks_table', 'mautic_subscription_segment_locks'), function (Blueprint $table): void {
             $table->char('segment_key_hash', 64)->primary();
+            $table->string('connection', 191);
+            $table->string('segment_key', 191);
+            $table->string('operation_id', 64);
+            $table->string('state', 24);
             $table->string('owner', 64);
+            $table->unsignedBigInteger('generation');
             $table->unsignedBigInteger('expires_at');
+            $table->unsignedBigInteger('remote_id')->nullable();
+            $table->string('last_error_code', 64)->nullable();
+            $table->timestamps();
+        });
+
+        $schema->create(config('mautic.subscription.audits_table', 'mautic_subscription_audits'), function (Blueprint $table): void {
+            $table->id();
+            $table->string('operation_id', 64);
+            $table->string('action', 64);
+            $table->string('actor', 64);
+            $table->string('reason_code', 64);
+            $table->string('prior_status', 24);
+            $table->string('prior_stage', 32);
+            $table->string('prior_error_code', 64)->nullable();
+            $table->string('outcome', 64);
+            $table->unsignedBigInteger('created_at');
+            $table->index('operation_id');
         });
     }
 
@@ -65,6 +88,7 @@ return new class extends Migration
     {
         $connection = config('mautic.subscription.database_connection');
         $schema = Schema::connection(is_string($connection) && $connection !== '' ? $connection : null);
+        $schema->dropIfExists(config('mautic.subscription.audits_table', 'mautic_subscription_audits'));
         $schema->dropIfExists(config('mautic.subscription.locks_table', 'mautic_subscription_segment_locks'));
         $schema->dropIfExists(config('mautic.subscription.segments_table', 'mautic_subscription_segments'));
         $schema->dropIfExists(config('mautic.subscription.intents_table', 'mautic_subscription_intents'));

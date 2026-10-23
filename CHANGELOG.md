@@ -64,6 +64,9 @@
 
 ### Fixed
 
+- Fence subscription and segment-provisioning transitions with exact generations, retain
+  create IDs before association, persist cross-event create uncertainty, and add audited,
+  attested recovery instead of lease-expiry mutation replay.
 - Bind embedded and fallback restriction-write verification state to the exact requested
   contact ID without replaying the mutation or issuing more than one fallback read.
 - Send Mautic's adapter-owned blank-overwrite control for explicit null or empty-string

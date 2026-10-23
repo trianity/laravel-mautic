@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace Trianity\LaravelMautic\Subscription;
 
+use RuntimeException;
 use Throwable;
 use Trianity\LaravelMautic\Contracts\ContactMappingRepository;
 use Trianity\LaravelMautic\Contracts\SubscriptionTransport;
 use Trianity\LaravelMautic\Exceptions\AmbiguousMutationOutcome;
 use Trianity\LaravelMautic\Exceptions\MauticWriteException;
 use Trianity\LaravelMautic\Exceptions\SegmentConflict;
+use Trianity\LaravelMautic\Exceptions\SegmentCreateEvidence;
 use Trianity\LaravelMautic\Exceptions\SegmentNotFound;
 use Trianity\LaravelMautic\Identity\RemoteContactState;
 use Trianity\LaravelMautic\Outbox\DatabaseOutboxStore;
@@ -29,14 +31,15 @@ final readonly class SubscriptionProcessor
     public function process(string $operationId): void
     {
         $owner = bin2hex(random_bytes(16));
-        $record = $this->store->begin($operationId, $owner, $this->leaseSeconds);
-        if ($record === null) {
+        $claim = $this->store->begin($operationId, $owner, $this->leaseSeconds);
+        if ($claim === null) {
             return;
         }
+        $record = $claim->record;
 
         $contactOutbox = $this->outbox->get($record->contactOperationId);
         if ($contactOutbox === null) {
-            $this->store->stop($operationId, $owner, SubscriptionStatus::Blocked, 'contact_command_missing');
+            $this->store->stop($claim, SubscriptionStatus::Blocked, 'contact_command_missing');
 
             return;
         }
@@ -44,76 +47,129 @@ final readonly class SubscriptionProcessor
             if ($contactOutbox->status->terminal()) {
                 $status = $contactOutbox->status === OutboxStatus::Ambiguous
                     ? SubscriptionStatus::Ambiguous : SubscriptionStatus::Blocked;
-                $this->store->stop($operationId, $owner, $status, 'contact_'.$contactOutbox->status->value);
+                $this->store->stop($claim, $status, 'contact_'.$contactOutbox->status->value);
             } else {
-                $this->store->pending($operationId, $owner, SubscriptionStage::Recorded);
+                $this->store->pending($claim, SubscriptionStage::Recorded);
             }
 
             return;
         }
         $mapping = $this->mappings->find($record->connection, $record->localReference);
         if ($mapping === null || $mapping->remoteState !== RemoteContactState::Active) {
-            $this->store->stop($operationId, $owner, SubscriptionStatus::Blocked, 'active_contact_mapping_missing');
+            $this->store->stop($claim, SubscriptionStatus::Blocked, 'active_contact_mapping_missing');
 
             return;
         }
         $contactId = $mapping->remoteId;
 
-        if (! $this->store->acquireSegment($record->connection, $record->segment->key, $owner, $this->leaseSeconds)) {
-            $this->store->pending($operationId, $owner, SubscriptionStage::ContactReady, $contactId);
+        $segmentClaim = $this->store->acquireSegment(
+            $record->connection,
+            $record->segment->key,
+            $record->operationId,
+            $owner,
+            $this->leaseSeconds,
+        );
+        if ($segmentClaim === null) {
+            $block = $this->store->segmentProvisioningBlock($record->connection, $record->segment->key);
+            if (($block->state ?? null) === 'ambiguous') {
+                $this->store->stop($claim, SubscriptionStatus::Ambiguous, 'segment_key_provisioning_ambiguous');
+            } else {
+                $this->store->pending($claim, SubscriptionStage::ContactReady, $contactId);
+            }
 
             return;
         }
 
         try {
-            $this->store->segmentProvisioningInFlight($operationId, $owner, $contactId);
-            $segmentId = $record->remoteSegmentId ?? $this->resolveSegment($record);
+            $segmentId = $record->remoteSegmentId ?? $this->resolveSegment($claim, $segmentClaim, $contactId);
+            $this->store->completeSegmentProvisioning($segmentClaim);
         } catch (AmbiguousMutationOutcome) {
-            $this->store->stop($operationId, $owner, SubscriptionStatus::Ambiguous, 'segment_create_outcome_ambiguous');
+            $this->store->preserveSegmentCreateEvidence($segmentClaim, null, 'segment_create_outcome_ambiguous');
+            $this->store->stop($claim, SubscriptionStatus::Ambiguous, 'segment_create_outcome_ambiguous');
+
+            return;
+        } catch (SegmentCreateEvidence $exception) {
+            $stored = $this->store->preserveSegmentCreateEvidence(
+                $segmentClaim,
+                $exception->remoteId,
+                'segment_create_evidence_preserved',
+            );
+            $this->store->stop(
+                $claim,
+                SubscriptionStatus::Ambiguous,
+                $stored ? 'segment_create_requires_recovery' : 'segment_create_evidence_persistence_failed',
+                $stored ? $exception->remoteId : null,
+            );
 
             return;
         } catch (SegmentConflict $exception) {
-            $this->store->stop($operationId, $owner, SubscriptionStatus::Blocked, $exception->getMessage());
+            $this->store->releaseSegment($segmentClaim);
+            $this->store->stop($claim, SubscriptionStatus::Blocked, $exception->getMessage());
 
             return;
         } catch (SegmentNotFound) {
-            $this->store->stop($operationId, $owner, SubscriptionStatus::Blocked, 'segment_missing');
+            $this->store->releaseSegment($segmentClaim);
+            $this->store->stop($claim, SubscriptionStatus::Blocked, 'segment_missing');
 
             return;
         } catch (Throwable) {
-            $this->store->stop($operationId, $owner, SubscriptionStatus::Failed, 'segment_resolution_failed');
+            $block = $this->store->segmentProvisioningBlock($record->connection, $record->segment->key);
+            if ($block !== null && ($block->operation_id ?? null) === $record->operationId
+                && in_array(($block->state ?? null), ['create_in_flight', 'ambiguous'], true)) {
+                $remoteId = is_numeric($block->remote_id ?? null) ? (int) $block->remote_id : null;
+                $stored = $this->store->preserveSegmentCreateEvidence(
+                    $segmentClaim,
+                    $remoteId,
+                    'segment_create_local_completion_failed',
+                );
+                $this->store->stop(
+                    $claim,
+                    SubscriptionStatus::Ambiguous,
+                    $stored ? 'segment_create_requires_recovery' : 'segment_create_evidence_persistence_failed',
+                    $stored ? $remoteId : null,
+                );
+
+                return;
+            }
+            $this->store->releaseSegment($segmentClaim);
+            $this->store->stop($claim, SubscriptionStatus::Failed, 'segment_resolution_failed');
 
             return;
-        } finally {
-            $this->store->releaseSegment($record->connection, $record->segment->key, $owner);
         }
 
-        $this->store->segmentReady($operationId, $owner, $contactId, $segmentId);
+        $this->store->segmentReady($claim, $contactId, $segmentId);
         try {
+            $this->store->assertOwned($claim);
             if ($this->hasMembership($record->connection, $contactId, $segmentId)) {
-                $this->store->complete($operationId, $owner);
+                $this->store->complete($claim);
 
                 return;
             }
-            $this->store->membershipInFlight($operationId, $owner);
+            $this->store->membershipInFlight($claim);
+            $this->store->assertOwned($claim);
             $this->transport->addMembership($record->connection, $contactId, $segmentId);
             if (! $this->hasMembership($record->connection, $contactId, $segmentId)) {
-                $this->store->stop($operationId, $owner, SubscriptionStatus::Ambiguous, 'membership_not_verified', $segmentId);
+                $this->store->stop($claim, SubscriptionStatus::Ambiguous, 'membership_not_verified', $segmentId);
 
                 return;
             }
-            $this->store->complete($operationId, $owner);
+            $this->store->complete($claim);
         } catch (AmbiguousMutationOutcome) {
-            $this->store->stop($operationId, $owner, SubscriptionStatus::Ambiguous, 'membership_outcome_ambiguous', $segmentId);
+            $this->store->stop($claim, SubscriptionStatus::Ambiguous, 'membership_outcome_ambiguous', $segmentId);
         } catch (MauticWriteException) {
-            $this->store->stop($operationId, $owner, SubscriptionStatus::Failed, 'membership_write_failed', $segmentId);
+            $this->store->stop($claim, SubscriptionStatus::Failed, 'membership_write_failed', $segmentId);
         } catch (Throwable) {
-            $this->store->stop($operationId, $owner, SubscriptionStatus::Ambiguous, 'membership_verification_uncertain', $segmentId);
+            $this->store->stop($claim, SubscriptionStatus::Ambiguous, 'membership_verification_uncertain', $segmentId);
         }
     }
 
-    private function resolveSegment(SubscriptionRecord $record): int
-    {
+    private function resolveSegment(
+        SubscriptionClaim $subscriptionClaim,
+        SegmentProvisioningClaim $provisioningClaim,
+        int $contactId,
+    ): int {
+        $record = $subscriptionClaim->record;
+        $this->store->assertOwned($subscriptionClaim);
         $gateway = $this->transport->segments($record->connection);
         $associated = $this->store->associatedSegment($record->connection, $record->segment->key);
         if ($associated !== null) {
@@ -141,12 +197,37 @@ final readonly class SubscriptionProcessor
             if ($record->segment->policy === SegmentProvisioningPolicy::ExistingOnly) {
                 throw new SegmentConflict('segment_missing');
             }
+            $this->store->segmentCreateInFlight($provisioningClaim);
+            $this->store->segmentProvisioningInFlight($subscriptionClaim, $contactId);
+            $this->store->assertOwned($subscriptionClaim);
             $segment = $gateway->create($definition);
+            try {
+                $this->store->recordSegmentCreateEvidence($provisioningClaim, $segment->remoteId);
+            } catch (Throwable $exception) {
+                if (! $this->store->preserveSegmentCreateEvidence(
+                    $provisioningClaim,
+                    $segment->remoteId,
+                    'segment_create_evidence_fallback',
+                )) {
+                    throw new RuntimeException(
+                        'The known remote segment ID could not be persisted; the durable create marker remains blocking.',
+                        previous: $exception,
+                    );
+                }
+                throw new SegmentCreateEvidence($segment->remoteId, previous: $exception);
+            }
         } else {
             $segment = $candidates[0];
         }
         $this->assertSuitable($record, $segment);
-        $this->store->associateSegment($record->connection, $record->segment->key, $segment->remoteId, $this->definitionHash($segment));
+        try {
+            $this->store->associateSegment($record->connection, $record->segment->key, $segment->remoteId, $this->definitionHash($segment));
+        } catch (Throwable $exception) {
+            if ($candidates === []) {
+                throw new SegmentCreateEvidence($segment->remoteId, previous: $exception);
+            }
+            throw $exception;
+        }
 
         return $segment->remoteId;
     }

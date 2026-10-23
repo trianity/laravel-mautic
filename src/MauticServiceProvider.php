@@ -199,6 +199,7 @@ final class MauticServiceProvider extends ServiceProvider
                 $this->subscriptionTable('intents_table', 'mautic_subscription_intents'),
                 $this->subscriptionTable('segments_table', 'mautic_subscription_segments'),
                 $this->subscriptionTable('locks_table', 'mautic_subscription_segment_locks'),
+                $this->subscriptionTable('audits_table', 'mautic_subscription_audits'),
             );
         });
         $this->app->singleton(SubscriptionDispatcher::class, function ($app): SubscriptionDispatcher {

@@ -41,6 +41,7 @@ return [
         'intents_table' => 'mautic_subscription_intents',
         'segments_table' => 'mautic_subscription_segments',
         'locks_table' => 'mautic_subscription_segment_locks',
+        'audits_table' => 'mautic_subscription_audits',
         'queue' => null,
         'lease_seconds' => 30,
     ],

@@ -178,13 +178,19 @@ The processor requires the contact outbox revision to complete and an active map
 exist before membership. A connection/host-segment-key association identifies a remote
 segment. Existing-only targets require a verified association or remote ID;
 create-if-absent targets carry a complete definition. Typed segment reads validate ID,
-alias, publication and empty filters. A shared segment-key lease coordinates package
-workers, and the verified remote ID is persisted before membership.
+alias, publication and empty filters. Exact owner/generation/expiry reservations prevent
+stale subscription and provisioning workers from transitioning replacement claims. Segment
+create has a durable connection/key in-flight marker; its expiry becomes a cross-event
+blocker, never automatic create takeover. A returned remote ID is captured before association
+and retained through response-validation or local-persistence failure where storage remains
+available.
 
 Membership is read before the mutation and again after it. Definite write failures and
 uncertain outcomes are different durable states; uncertainty is not automatically
 replayed. Contact completion survives later failures. The flow never changes DNC or
-consent and does not imply campaign entry or email delivery. See
+consent and does not imply campaign entry or email delivery. Verified operator recovery is
+bounded, identity-checked and audited; replay after uncertain membership or create work
+requires explicit attestation that the earlier request cannot still complete. See
 `docs/decisions/006-subscription-delivery.md`.
 
 ## Incoming delivery
