@@ -651,6 +651,29 @@ operation limit. Cleanup then switches the same budget object to an independent
 capacity. Rejected requests never reach the verified TLS client, and neither request
 headers nor bodies are inspected or logged by the budget.
 
+The custom-field lifecycle probe is separately selected and requires a dedicated
+published Contact/Text field with a non-empty label and Required and Unique identifier
+disabled. Put its actual lowercase alias in ignored `tests/.env`:
+
+```dotenv
+MAUTIC_LIVE_OAUTH_CUSTOM_FIELD_ALIAS=lm_oauth_text
+```
+
+For alias `test_field`, the corresponding Mautic email token is
+`{contactfield=test_field}`. The token renders the stored field value; it does not grant
+write permission or change the package allowlist.
+
+With the same fixture opt-in and disposable acknowledgement, run:
+
+```bash
+composer test:oauth-custom-field
+```
+
+The command validates list and item metadata before contact mutation, never creates or
+changes the shared field definition, and uses the same transport-level operation/cleanup
+budgets. It proves create/read/update, unrelated-PATCH preservation, explicit clear, DNC
+and segment-set preservation, then ownership-checked contact deletion.
+
 ## Normalized contact reads
 
 ```php
@@ -673,6 +696,28 @@ $page = $reads->search(new ContactSearch('email:person@example.com', offset: 0, 
 $memberships = $reads->segments($mauticContactId);
 // Successful empty membership is []; API failures throw MauticReadException instead.
 ```
+
+Custom fields use their real aliases in the same field map. Generic writes require every
+alias to be explicit; omitted aliases are unchanged, while null/empty-string clear intent
+enables Mautic's adapter-owned blank-overwrite control:
+
+```php
+use Trianity\LaravelMautic\Write\ContactFields;
+
+$custom = $contact->field('host_reference');
+$connection->contactWrites()->update($contact->remoteId, ContactFields::fromArray(
+    ['host_reference' => 'host-42'],
+    ['host_reference'],
+));
+```
+
+Each DNC entry exposes optional `remoteId`, `reason`, `dateAdded`, `channelId` and
+`comments`, plus mandatory `channel`. `knownReason()` maps only verified Mautic constants
+to `DoNotContactReason`; unknown raw values remain available. `bounceEvidence()` returns
+`SubtypeUnavailable` for reason 2 because the supported contact API exposes no reliable
+hard/soft subtype or history. Missing/null DNC data is never converted into an empty,
+contactable result. Administrative DNC writes remain unsupported; see
+[Decision 005](docs/decisions/005-host-owned-administrative-restrictions.md).
 
 `Contact`, `ContactPage` and `SegmentMemberships` are immutable package DTOs.
 `OptionalValue` distinguishes a missing property, an explicit `null`, and a present

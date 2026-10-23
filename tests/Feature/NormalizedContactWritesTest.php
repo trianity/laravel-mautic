@@ -119,6 +119,27 @@ it('adds the Mautic blank-overwrite control only when a PATCH explicitly clears 
         ))->toThrow(InvalidWriteRequest::class);
 });
 
+it('patches only an explicitly selected custom alias and distinguishes set unchanged and clear', function () {
+    $history = [];
+    useContactWriteResponses([
+        new Response(200, ['Content-Type' => 'application/json'], contactJson(42, ['host_reference' => 'set'])),
+        new Response(200, ['Content-Type' => 'application/json'], contactJson(42, ['firstname' => 'Related'])),
+        new Response(200, ['Content-Type' => 'application/json'], contactJson(42, ['host_reference' => null])),
+    ], $history);
+
+    $writer = app(MauticManager::class)->connection()->contactWrites();
+    $writer->update(42, ContactFields::fromArray(['host_reference' => 'set'], ['host_reference']));
+    $writer->update(42, ContactFields::fromArray(['firstname' => 'Related'], ['firstname']));
+    $writer->update(42, ContactFields::fromArray(['host_reference' => ''], ['host_reference']));
+
+    expect(json_decode((string) $history[0]['request']->getBody(), true, flags: JSON_THROW_ON_ERROR))
+        ->toBe(['host_reference' => 'set'])
+        ->and(json_decode((string) $history[1]['request']->getBody(), true, flags: JSON_THROW_ON_ERROR))
+        ->toBe(['firstname' => 'Related'])
+        ->and(json_decode((string) $history[2]['request']->getBody(), true, flags: JSON_THROW_ON_ERROR))
+        ->toBe(['host_reference' => '', 'overwriteWithBlank' => true]);
+});
+
 it('rejects an exact normalized duplicate before Mautic can merge it', function () {
     $history = [];
     useContactWriteResponses([

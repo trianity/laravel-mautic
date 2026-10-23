@@ -13,6 +13,7 @@ final readonly class OAuthFixtureConfiguration
     public function __construct(
         public OAuthAcceptanceConfiguration $oauth,
         public ?int $staticSegmentId,
+        public ?string $customFieldAlias,
     ) {}
 
     public static function fromEnvironment(): self
@@ -22,6 +23,7 @@ final readonly class OAuthFixtureConfiguration
             'MAUTIC_OAUTH_FIXTURE_TESTS',
             'MAUTIC_LIVE_DISPOSABLE',
             'MAUTIC_LIVE_OAUTH_STATIC_SEGMENT_ID',
+            'MAUTIC_LIVE_OAUTH_CUSTOM_FIELD_ALIAS',
         ] as $key) {
             $value = getenv($key);
             if (is_string($value)) {
@@ -60,6 +62,26 @@ final readonly class OAuthFixtureConfiguration
         );
     }
 
+    public static function customFieldFromEnvironment(): self
+    {
+        $environment = [];
+        foreach ([
+            'MAUTIC_OAUTH_FIXTURE_TESTS',
+            'MAUTIC_LIVE_DISPOSABLE',
+            'MAUTIC_LIVE_OAUTH_CUSTOM_FIELD_ALIAS',
+        ] as $key) {
+            $value = getenv($key);
+            if (is_string($value)) {
+                $environment[$key] = $value;
+            }
+        }
+
+        return self::customFieldFromArray(
+            $environment,
+            OAuthAcceptanceConfiguration::fromEnvironment(...),
+        );
+    }
+
     /**
      * @param  array<string, string>  $environment
      * @param  callable(): OAuthAcceptanceConfiguration  $oauthConfiguration
@@ -72,7 +94,25 @@ final readonly class OAuthFixtureConfiguration
             throw new RuntimeException('MAUTIC_LIVE_OAUTH_STATIC_SEGMENT_ID is required for static segment acceptance.');
         }
 
-        return new self($oauthConfiguration(), $segmentId);
+        return new self($oauthConfiguration(), $segmentId, null);
+    }
+
+    /**
+     * @param  array<string, string>  $environment
+     * @param  callable(): OAuthAcceptanceConfiguration  $oauthConfiguration
+     */
+    public static function customFieldFromArray(array $environment, callable $oauthConfiguration): self
+    {
+        self::validateMutationGates($environment);
+        $alias = trim($environment['MAUTIC_LIVE_OAUTH_CUSTOM_FIELD_ALIAS'] ?? '');
+        if ($alias === '') {
+            throw new RuntimeException('MAUTIC_LIVE_OAUTH_CUSTOM_FIELD_ALIAS is required for custom-field acceptance.');
+        }
+        if (preg_match('/^[a-z][a-z0-9_]*$/D', $alias) !== 1) {
+            throw new RuntimeException('MAUTIC_LIVE_OAUTH_CUSTOM_FIELD_ALIAS must be a lowercase Mautic field alias.');
+        }
+
+        return new self($oauthConfiguration(), null, $alias);
     }
 
     /** @param array<string, string> $environment */
@@ -80,7 +120,9 @@ final readonly class OAuthFixtureConfiguration
     {
         self::validateMutationGates($environment);
 
-        return new self($oauth, self::segmentId($environment));
+        $alias = trim($environment['MAUTIC_LIVE_OAUTH_CUSTOM_FIELD_ALIAS'] ?? '');
+
+        return new self($oauth, self::segmentId($environment), $alias === '' ? null : $alias);
     }
 
     /** @param array<string, string> $environment */

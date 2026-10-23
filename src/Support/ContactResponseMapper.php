@@ -156,16 +156,17 @@ final class ContactResponseMapper
         $entries = [];
         foreach ($contact['doNotContact'] as $entry) {
             if (! is_array($entry)
-                || ! is_string($entry['channel'] ?? null)
-                || (isset($entry['id']) && ! is_int($entry['id']))) {
+                || ! is_string($entry['channel'] ?? null)) {
                 $this->unexpected($operation);
             }
 
             $entries[] = new DoNotContactEntry(
-                $entry['id'] ?? null,
+                $this->optionalInt($entry, 'id', $operation),
                 $entry['channel'],
                 $this->optionalReason($entry, $operation),
-                $this->optionalComments($entry, $operation),
+                $this->optionalString($entry, 'dateAdded', $operation),
+                $this->optionalInt($entry, 'channelId', $operation),
+                $this->optionalString($entry, 'comments', $operation),
             );
         }
 
@@ -197,21 +198,48 @@ final class ContactResponseMapper
      * @param  array<mixed>  $entry
      * @return OptionalValue<string>
      */
-    private function optionalComments(array $entry, ReadOperation|MutationOperation $operation): OptionalValue
-    {
-        if (! array_key_exists('comments', $entry)) {
+    private function optionalString(
+        array $entry,
+        string $key,
+        ReadOperation|MutationOperation $operation,
+    ): OptionalValue {
+        if (! array_key_exists($key, $entry)) {
             return OptionalValue::missing();
         }
 
-        if ($entry['comments'] === null) {
+        if ($entry[$key] === null) {
             return OptionalValue::null();
         }
 
-        if (! is_string($entry['comments'])) {
+        if (! is_string($entry[$key])) {
             $this->unexpected($operation);
         }
 
-        return OptionalValue::present($entry['comments']);
+        return OptionalValue::present($entry[$key]);
+    }
+
+    /**
+     * @param  array<mixed>  $entry
+     * @return OptionalValue<int>
+     */
+    private function optionalInt(
+        array $entry,
+        string $key,
+        ReadOperation|MutationOperation $operation,
+    ): OptionalValue {
+        if (! array_key_exists($key, $entry)) {
+            return OptionalValue::missing();
+        }
+
+        if ($entry[$key] === null) {
+            return OptionalValue::null();
+        }
+
+        if (! is_int($entry[$key])) {
+            $this->unexpected($operation);
+        }
+
+        return OptionalValue::present($entry[$key]);
     }
 
     private function unexpected(ReadOperation|MutationOperation $operation): never

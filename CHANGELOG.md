@@ -48,6 +48,10 @@
   persistent test tokens, verified local TLS and bounded read-only API probes.
 - A separately gated OAuth contact-lifecycle acceptance suite with durable ignored
   ownership evidence, exact cleanup checks and optional dedicated static-segment proof.
+- Typed delivery-restriction reads with complete available DNC metadata, known-reason
+  mapping, preserved unknown values and explicit unavailable bounce-subtype evidence.
+- A separately gated, metadata-preflighted OAuth custom-field lifecycle probe and a
+  design for atomic, independently owned administrative restrictions.
 
 ### Fixed
 

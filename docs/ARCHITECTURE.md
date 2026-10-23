@@ -109,6 +109,18 @@ membership commands from filter-based membership and test exclusions/re-addition
 A DNC record, marketing consent and segment membership are different concepts.
 Generic updates must never imply renewed consent or remove DNC.
 
+Normalized DNC reads expose the available record ID, channel, raw reason, date added,
+channel ID and comments with explicit missing/null/value states. Known Mautic reasons are
+typed while unknown values remain intact. A reason-2 row proves a bounce restriction but
+not hard/soft subtype; the current REST adapter exposes no attributable subtype/history,
+so that capability is explicitly unavailable. Generic fields never carry DNC commands.
+
+Host-owned administrative restriction writes require independent durable ownership and
+remote atomic compare-and-set semantics. Mautic's stock channel-only removal cannot safely
+release one owner while preserving concurrent unsubscribe, bounce and administrative
+blocks. No public mutation API is exposed until the minimal extension contract in
+`docs/decisions/005-host-owned-administrative-restrictions.md` is implemented and proven.
+
 The implemented segment commands use only manual add/remove endpoints. They do not
 change fields, consent, DNC or mail state. Dynamic filter evaluation is asynchronous;
 manual removal may be represented as an exclusion until explicitly re-added. Remote

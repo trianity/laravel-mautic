@@ -8,6 +8,7 @@
   no redirects, no automatic retry, replaceable transport/connection factories.
 - Provider auto-discovery, publishable config, optional facade and raw SDK contexts.
 - Immutable normalized contact DTOs, bounded search and contact segment memberships.
+- Typed DNC metadata and reason reads with explicit unavailable bounce-subtype evidence.
 - Normalized read failures, read-operation safety metadata and deterministic read fake.
 - Allowlisted contact creates, PATCH-only partial updates and checked batch writes.
 - Manual segment membership commands, mutation safety metadata and deterministic fake.
@@ -40,6 +41,10 @@ no automatic database reset or model event exists, and no compatibility bridge f
 unreleased development schemas is provided. No release tag or Packagist publication
 exists.
 
+Safe host-owned administrative restriction writes remain unimplemented because Mautic
+7.2.1's stock channel-only removal cannot enforce ownership or an atomic revision check.
+Decision 005 defines the required minimal extension contract.
+
 ## Verification
 
 See the dated entries below. Default tests exercise the real SDK with fake HTTP and do
@@ -51,6 +56,40 @@ require explicit target-specific opt-in.
 Complete the Task 07 live-server acceptance matrix on an explicitly approved disposable
 local Mautic installation before claiming a supported server version. After that evidence
 is recorded, review the next roadmap milestone; do not begin it implicitly.
+
+## Custom fields and delivery restrictions — 2026-10-23
+
+Task 07G extends normalized DNC entries with optional record ID, date added, channel ID
+and comments while preserving missing, null and malformed states. Verified Mautic reasons
+map to `DoNotContactReason`; unknown raw values remain intact. A reason-2 restriction
+returns `BounceEvidence::SubtypeUnavailable` because the existing contact REST response
+does not expose the parser subtype or bounce history. No free-text inference is used.
+
+Offline real-SDK tests cover actual custom aliases, explicit set/clear PATCH payloads,
+omitted unrelated aliases, complete/empty/missing/malformed DNC shapes, known and unknown
+reasons, and unavailable bounce subtype. A focused `composer test:oauth-custom-field`
+suite validates a configurable dedicated Contact/Text field definition before creating a
+cryptographically named contact. It shares the transport-level 16-request operation and
+five-request cleanup budgets and retains exact ID/email ownership cleanup.
+
+The focused suite first skipped without mutation opt-in and proved that a missing alias
+fails before OAuth configuration or networking. After the dedicated `test_field` alias
+was configured, the authorized Mautic 7.2.1 run passed 1 test / 17 assertions. It proved
+metadata preflight, create/read/update, preservation through an unrelated PATCH, explicit
+clear, unchanged known DNC and membership sets, and exact ownership cleanup. Sanitized
+evidence records `deleted`, 14 operation attempts and three cleanup attempts. No email was
+sent and the shared field definition was not mutated.
+
+Installed Mautic 7.2.1 source proves DNC response fields/reason constants, alias-scoped
+PATCH behavior, channel-level DNC replacement/removal semantics, and internal bounce
+details that are not exposed by the contact API. Decision 005 requires durable independent
+ownership plus atomic conditional release/reset in a minimal Mautic extension before any
+administrative restriction write API is added.
+
+Local `composer check` passed strict Composer validation, Pint, Larastan level 8 and
+232 tests / 1065 assertions; four explicitly opt-in MariaDB tests skipped. The final
+focused read/write/preflight selection passed 42 tests / 125 assertions, and
+`git diff --check` passed. No remote CI was run for this uncommitted worktree.
 
 ## Installed Mautic API v2 reference — 2026-10-19
 
