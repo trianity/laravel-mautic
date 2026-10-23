@@ -114,6 +114,9 @@ final readonly class SdkContactRestrictionWriter implements ContactRestrictionWr
             }
 
             $contact = $this->mapper->contact($response['contact'], $operation);
+            if ($contact->remoteId !== $remoteId) {
+                throw new RestrictionStateNotVerified($operation, $this->connection);
+            }
 
             return [$contact, $this->emailRestrictions($contact, $operation)];
         } catch (MauticWriteException) {
@@ -131,6 +134,9 @@ final readonly class SdkContactRestrictionWriter implements ContactRestrictionWr
                 throw new RestrictionStateNotVerified($operation, $this->connection);
             }
             $contact = $this->mapper->contact($readResponse['contact'], $readOperation);
+            if ($contact->remoteId !== $remoteId) {
+                throw new RestrictionStateNotVerified($operation, $this->connection);
+            }
             if ($contact->doNotContact->presence !== ValuePresence::Value) {
                 throw new RestrictionStateNotVerified($operation, $this->connection);
             }

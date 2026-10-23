@@ -22,6 +22,7 @@ use Trianity\LaravelMautic\MauticManager;
 use Trianity\LaravelMautic\Restriction\ManualEmailBlock;
 use Trianity\LaravelMautic\Restriction\RestrictionMutationOutcome;
 use Trianity\LaravelMautic\Write\FailureKind;
+use Trianity\LaravelMautic\Write\MutationOperation;
 
 function useRestrictionWriteResponses(array $responses, array &$history = []): void
 {
@@ -47,9 +48,13 @@ function useRestrictionWriteResponses(array $responses, array &$history = []): v
 }
 
 /** @param list<mixed>|null $dnc */
-function restrictionContactResponse(?array $dnc, bool $includeDnc = true, array $extra = []): string
-{
-    $contact = ['id' => 42, 'fields' => ['all' => ['email' => 'person@example.test']]];
+function restrictionContactResponse(
+    ?array $dnc,
+    bool $includeDnc = true,
+    array $extra = [],
+    int $contactId = 42,
+): string {
+    $contact = ['id' => $contactId, 'fields' => ['all' => ['email' => 'person@example.test']]];
     if ($includeDnc) {
         $contact['doNotContact'] = $dnc;
     }
@@ -195,6 +200,55 @@ it('performs one explicit read when the mutation embeds an unusable contact shap
         ->toBe('https://mautic.example.test/api/contacts/42');
 });
 
+it('rejects a block response for another contact and verifies the requested contact once', function () {
+    $history = [];
+    $command = ManualEmailBlock::record('Administrative request', fixedRestrictionClock());
+    useRestrictionWriteResponses([
+        new Response(200, ['Content-Type' => 'application/json'], restrictionContactResponse([
+            restrictionEntry(3, $command->comments()),
+        ], contactId: 43)),
+        new Response(200, ['Content-Type' => 'application/json'], restrictionContactResponse([
+            restrictionEntry(3, $command->comments()),
+        ])),
+    ], $history);
+
+    $result = app(MauticManager::class)->connection()->restrictionWrites()->blockEmail(42, $command);
+
+    expect($result->contact->remoteId)->toBe(42)
+        ->and($result->outcome)->toBe(RestrictionMutationOutcome::ManualPresent)
+        ->and($history)->toHaveCount(2)
+        ->and($history[0]['request']->getMethod())->toBe('POST')
+        ->and((string) $history[0]['request']->getUri())
+        ->toBe('https://mautic.example.test/api/contacts/42/dnc/email/add')
+        ->and($history[1]['request']->getMethod())->toBe('GET')
+        ->and((string) $history[1]['request']->getUri())
+        ->toBe('https://mautic.example.test/api/contacts/42');
+});
+
+it('rejects a block fallback response for another contact without replay', function () {
+    $history = [];
+    useRestrictionWriteResponses([
+        new Response(200, ['Content-Type' => 'application/json'], restrictionContactResponse(null)),
+        new Response(200, ['Content-Type' => 'application/json'], restrictionContactResponse([
+            restrictionEntry(3),
+        ], contactId: 43)),
+    ], $history);
+
+    expect(fn () => app(MauticManager::class)->connection()->restrictionWrites()->blockEmail(
+        42,
+        ManualEmailBlock::record('Administrative request', fixedRestrictionClock()),
+    ))->toThrow(fn (RestrictionStateNotVerified $exception) => $exception->mutationMayHaveCompleted
+        && $exception->operation === MutationOperation::BlockContactEmail
+        && $exception->connection === 'main')
+        ->and($history)->toHaveCount(2)
+        ->and($history[0]['request']->getMethod())->toBe('POST')
+        ->and((string) $history[0]['request']->getUri())
+        ->toBe('https://mautic.example.test/api/contacts/42/dnc/email/add')
+        ->and($history[1]['request']->getMethod())->toBe('GET')
+        ->and((string) $history[1]['request']->getUri())
+        ->toBe('https://mautic.example.test/api/contacts/42');
+});
+
 it('posts a channel-level release and distinguishes applied from no matching restriction', function () {
     $history = [];
     useRestrictionWriteResponses([
@@ -236,6 +290,53 @@ it('reports that another email restriction remains after a successful channel re
     expect($result->outcome)->toBe(RestrictionMutationOutcome::RestrictionRemains)
         ->and($result->recordFound)->toBeTrue()
         ->and($result->emailRestrictions)->toHaveCount(1);
+});
+
+it('rejects a release response for another contact and verifies the requested contact once', function () {
+    $history = [];
+    useRestrictionWriteResponses([
+        new Response(200, ['Content-Type' => 'application/json'], restrictionContactResponse(
+            [],
+            extra: ['recordFound' => true],
+            contactId: 43,
+        )),
+        new Response(200, ['Content-Type' => 'application/json'], restrictionContactResponse([])),
+    ], $history);
+
+    $result = app(MauticManager::class)->connection()->restrictionWrites()->releaseEmailRestriction(42);
+
+    expect($result->contact->remoteId)->toBe(42)
+        ->and($result->outcome)->toBe(RestrictionMutationOutcome::Released)
+        ->and($history)->toHaveCount(2)
+        ->and($history[0]['request']->getMethod())->toBe('POST')
+        ->and((string) $history[0]['request']->getUri())
+        ->toBe('https://mautic.example.test/api/contacts/42/dnc/email/remove')
+        ->and($history[1]['request']->getMethod())->toBe('GET')
+        ->and((string) $history[1]['request']->getUri())
+        ->toBe('https://mautic.example.test/api/contacts/42');
+});
+
+it('rejects a release fallback response for another contact without replay', function () {
+    $history = [];
+    useRestrictionWriteResponses([
+        new Response(200, ['Content-Type' => 'application/json'], restrictionContactResponse(
+            null,
+            extra: ['recordFound' => true],
+        )),
+        new Response(200, ['Content-Type' => 'application/json'], restrictionContactResponse([], contactId: 43)),
+    ], $history);
+
+    expect(fn () => app(MauticManager::class)->connection()->restrictionWrites()->releaseEmailRestriction(42))
+        ->toThrow(fn (RestrictionStateNotVerified $exception) => $exception->mutationMayHaveCompleted
+            && $exception->operation === MutationOperation::ReleaseContactEmailRestriction
+            && $exception->connection === 'main')
+        ->and($history)->toHaveCount(2)
+        ->and($history[0]['request']->getMethod())->toBe('POST')
+        ->and((string) $history[0]['request']->getUri())
+        ->toBe('https://mautic.example.test/api/contacts/42/dnc/email/remove')
+        ->and($history[1]['request']->getMethod())->toBe('GET')
+        ->and((string) $history[1]['request']->getUri())
+        ->toBe('https://mautic.example.test/api/contacts/42');
 });
 
 it('rejects invalid restriction commands before networking', function () {

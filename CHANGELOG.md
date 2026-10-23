@@ -59,6 +59,8 @@
 
 ### Fixed
 
+- Bind embedded and fallback restriction-write verification state to the exact requested
+  contact ID without replaying the mutation or issuing more than one fallback read.
 - Send Mautic's adapter-owned blank-overwrite control for explicit null or empty-string
   contact PATCH values, preventing successful no-op clears on Mautic 7.2.1.
 - Measure the controlled OAuth refresh generation baseline immediately before expiry

@@ -99,6 +99,26 @@ validation, Pint, Larastan level 8 and 277 tests / 1184 assertions with four exp
 opt-in MariaDB tests skipped. `git diff --check` also passed; remote CI was not run for
 the uncommitted worktree.
 
+## Restriction-write contact identity correction — 2026-10-23
+
+Task 07I-A binds every accepted restriction state to the exact requested contact ID.
+An otherwise usable embedded mutation contact with a different ID is now rejected as
+verification evidence and follows the existing single GET fallback without replaying the
+block or release. If that fallback returns another contact, the writer throws
+`RestrictionStateNotVerified` for the original mutation and connection with
+`mutationMayHaveCompleted = true`; it issues no second GET and no repeated mutation.
+
+Real-SDK regressions cover both public operations with synthetic IDs and exact request
+history. They prove one POST plus one GET for mismatched embedded evidence, one POST plus
+one GET followed by conservative failure for a mismatched fallback, and retain the
+existing no-fallback behavior for a usable response belonging to the requested contact.
+The focused restriction-write selection passed 26 tests / 98 assertions, and Larastan
+level 8 reported no errors. Final `composer check` passed strict Composer validation,
+Pint, Larastan level 8 and 281 tests / 1210 assertions with four explicitly opt-in
+MariaDB tests skipped. `git diff --check` passed. This controlled malformed-response
+correction did not run a new live acceptance suite; the existing Mautic 7.2.1 evidence
+above remains unchanged. Remote CI was not run for this uncommitted worktree.
+
 ## OAuth manual-restriction read acceptance — 2026-10-23
 
 Task 07H adds a separately selected, strictly read-only OAuth acceptance suite for an
