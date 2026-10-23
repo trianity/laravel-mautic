@@ -40,7 +40,9 @@ final readonly class SubscriptionOperator
     {
         $this->validateAudit($actor, $reasonCode);
         $record = $this->required($operationId);
-        if ($record->status !== SubscriptionStatus::Failed || $record->lastErrorCode !== 'membership_write_failed') {
+        if ($record->status !== SubscriptionStatus::Failed
+            || (! str_starts_with((string) $record->lastErrorCode, 'membership_rejected_')
+                && ! str_starts_with((string) $record->lastErrorCode, 'membership_preflight_'))) {
             throw new RuntimeException('Only a definite membership write failure may be resumed without attestation.');
         }
         $this->store->operatorReplayMembership($operationId, $actor, $reasonCode);

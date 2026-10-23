@@ -61,10 +61,12 @@ final readonly class SdkContactReader implements ContactReader
     public function segments(int $remoteId): SegmentMemberships
     {
         $operation = ReadOperation::ListContactSegments;
+        $raw = $this->contacts->getContactSegments($remoteId);
         $response = $this->boundary->successful(
-            $this->contacts->getContactSegments($remoteId),
+            $raw,
             $operation,
             $this->connection,
+            SdkResponseMetadata::retryAfterForResponse($raw, $this->contacts),
         );
 
         $total = $this->boundary->nonNegativeInteger($response['total'] ?? null);

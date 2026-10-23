@@ -9,6 +9,7 @@ use Throwable;
 use Trianity\LaravelMautic\Contracts\ContactMappingRepository;
 use Trianity\LaravelMautic\Contracts\SubscriptionTransport;
 use Trianity\LaravelMautic\Exceptions\AmbiguousMutationOutcome;
+use Trianity\LaravelMautic\Exceptions\MauticReadException;
 use Trianity\LaravelMautic\Exceptions\MauticWriteException;
 use Trianity\LaravelMautic\Exceptions\SegmentConflict;
 use Trianity\LaravelMautic\Exceptions\SegmentCreateEvidence;
@@ -16,7 +17,9 @@ use Trianity\LaravelMautic\Exceptions\SegmentNotFound;
 use Trianity\LaravelMautic\Identity\RemoteContactState;
 use Trianity\LaravelMautic\Outbox\DatabaseOutboxStore;
 use Trianity\LaravelMautic\Outbox\OutboxStatus;
+use Trianity\LaravelMautic\Read\ReadFailureKind;
 use Trianity\LaravelMautic\Segment\StaticSegment;
+use Trianity\LaravelMautic\Write\FailureKind;
 
 final readonly class SubscriptionProcessor
 {
@@ -26,7 +29,13 @@ final readonly class SubscriptionProcessor
         private ContactMappingRepository $mappings,
         private SubscriptionTransport $transport,
         private int $leaseSeconds = 30,
-    ) {}
+        private int $maxMembershipAttempts = 5,
+        private int $maximumDelaySeconds = 300,
+    ) {
+        if ($leaseSeconds < 1 || $maxMembershipAttempts < 1 || $maximumDelaySeconds < 1) {
+            throw new \InvalidArgumentException('Subscription lease, attempt and delay limits must be positive.');
+        }
+    }
 
     public function process(string $operationId): void
     {
@@ -145,22 +154,163 @@ final readonly class SubscriptionProcessor
 
                 return;
             }
-            $this->store->membershipInFlight($claim);
+        } catch (MauticReadException $exception) {
+            $this->handleMembershipPreflightFailure($claim, $segmentId, $exception);
+
+            return;
+        } catch (Throwable) {
+            $this->store->rejectMembership(
+                $claim,
+                ReadFailureKind::UnexpectedResponse->value,
+                'membership_preflight_unexpected_response',
+                $segmentId,
+            );
+
+            return;
+        }
+
+        $this->store->membershipInFlight($claim);
+        try {
             $this->store->assertOwned($claim);
             $this->transport->addMembership($record->connection, $contactId, $segmentId);
+        } catch (AmbiguousMutationOutcome) {
+            $this->store->stop(
+                $claim,
+                SubscriptionStatus::Ambiguous,
+                'membership_outcome_ambiguous',
+                $segmentId,
+                FailureKind::AmbiguousOutcome->value,
+            );
+
+            return;
+        } catch (MauticWriteException $exception) {
+            $this->handleMembershipMutationFailure($claim, $segmentId, $exception);
+
+            return;
+        } catch (Throwable) {
+            $this->store->stop(
+                $claim,
+                SubscriptionStatus::Ambiguous,
+                'membership_mutation_unexpected_response',
+                $segmentId,
+                FailureKind::UnexpectedResponse->value,
+            );
+
+            return;
+        }
+
+        try {
             if (! $this->hasMembership($record->connection, $contactId, $segmentId)) {
-                $this->store->stop($claim, SubscriptionStatus::Ambiguous, 'membership_not_verified', $segmentId);
+                $this->store->stop(
+                    $claim,
+                    SubscriptionStatus::Ambiguous,
+                    'membership_not_verified',
+                    $segmentId,
+                    ReadFailureKind::UnexpectedResponse->value,
+                );
 
                 return;
             }
             $this->store->complete($claim);
-        } catch (AmbiguousMutationOutcome) {
-            $this->store->stop($claim, SubscriptionStatus::Ambiguous, 'membership_outcome_ambiguous', $segmentId);
-        } catch (MauticWriteException) {
-            $this->store->stop($claim, SubscriptionStatus::Failed, 'membership_write_failed', $segmentId);
+        } catch (MauticReadException $exception) {
+            $this->store->stop(
+                $claim,
+                SubscriptionStatus::Ambiguous,
+                'membership_verification_'.$exception->kind->value,
+                $segmentId,
+                $exception->kind->value,
+            );
         } catch (Throwable) {
-            $this->store->stop($claim, SubscriptionStatus::Ambiguous, 'membership_verification_uncertain', $segmentId);
+            $this->store->stop(
+                $claim,
+                SubscriptionStatus::Ambiguous,
+                'membership_verification_unexpected_response',
+                $segmentId,
+                ReadFailureKind::UnexpectedResponse->value,
+            );
         }
+    }
+
+    private function handleMembershipPreflightFailure(
+        SubscriptionClaim $claim,
+        int $segmentId,
+        MauticReadException $exception,
+    ): void {
+        $attempt = $claim->record->membershipReadAttempts + 1;
+        $retryable = in_array($exception->kind, [
+            ReadFailureKind::Authentication,
+            ReadFailureKind::Timeout,
+            ReadFailureKind::Throttled,
+            ReadFailureKind::RemoteServer,
+            ReadFailureKind::Transport,
+        ], true);
+        if ($retryable && $attempt < $this->maxMembershipAttempts) {
+            $this->store->retryMembershipRead(
+                $claim,
+                $this->nextAttemptAt($claim->record->operationId, $attempt, $exception->retryAfterSeconds),
+                $exception->kind->value,
+                'membership_preflight_'.$exception->kind->value,
+            );
+
+            return;
+        }
+        $this->store->rejectMembership(
+            $claim,
+            $exception->kind->value,
+            $retryable ? 'membership_preflight_attempts_exhausted' : 'membership_preflight_'.$exception->kind->value,
+            $segmentId,
+            true,
+        );
+    }
+
+    private function handleMembershipMutationFailure(
+        SubscriptionClaim $claim,
+        int $segmentId,
+        MauticWriteException $exception,
+    ): void {
+        $attempt = $claim->record->membershipWriteAttempts + 1;
+        if (in_array($exception->kind, [FailureKind::Authentication, FailureKind::Throttled], true)
+            && $attempt < $this->maxMembershipAttempts) {
+            $this->store->retryMembershipWrite(
+                $claim,
+                $this->nextAttemptAt($claim->record->operationId, $attempt, $exception->retryAfterSeconds),
+                $exception->kind->value,
+                'membership_rejected_'.$exception->kind->value,
+            );
+
+            return;
+        }
+        if (in_array($exception->kind, [
+            FailureKind::Authentication,
+            FailureKind::Validation,
+            FailureKind::Throttled,
+            FailureKind::TargetNotFound,
+        ], true)) {
+            $this->store->rejectMembership(
+                $claim,
+                $exception->kind->value,
+                'membership_rejected_'.$exception->kind->value,
+                $segmentId,
+            );
+
+            return;
+        }
+        $this->store->stop(
+            $claim,
+            SubscriptionStatus::Ambiguous,
+            'membership_mutation_'.$exception->kind->value,
+            $segmentId,
+            $exception->kind->value,
+        );
+    }
+
+    private function nextAttemptAt(string $operationId, int $attempt, ?int $retryAfter): int
+    {
+        $delay = $retryAfter === null
+            ? min($this->maximumDelaySeconds, (5 * (2 ** max(0, $attempt - 1))) + (crc32($operationId) % 3))
+            : max(1, $retryAfter);
+
+        return $this->store->now() + $delay;
     }
 
     private function resolveSegment(

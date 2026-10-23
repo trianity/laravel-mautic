@@ -69,10 +69,18 @@ the first write fails. A later response-validation, association or local-complet
 retains that ID on the key-level blocker and intent where storage remains available. If
 storage itself remains unavailable, the worker reports that limitation and leaves the
 durable in-flight marker blocking recreation rather than claiming evidence was persisted.
-Membership is read before mutation and read again after success. A membership mutation
-with uncertain outcome is not automatically replayed; an operator must reconcile it.
-Unambiguous terminal membership failure can be explicitly returned to pending without
-replaying completed prerequisites. Recovery reloads the stored identity and writes an audit
+Membership is read before mutation and read again after success. These phases have separate
+durable failure semantics. A transient initial GET uses bounded durable scheduling and a
+numeric server `Retry-After` when present; queue delivery and polling cannot run it early.
+Permanent or exhausted initial reads are actionable at `segment_ready` and may be resumed
+without attesting to an unsent request. A response-proved POST rejection has the same safe
+recovery property. In contrast, POST 5xx, malformed/unexpected responses, transport/timeout
+outcomes and failed post-POST verification remain membership-in-flight ambiguity.
+
+A membership mutation with uncertain outcome is not automatically replayed; an operator
+must reconcile it. Read-only exact-membership confirmation may complete it, while replay
+requires attestation that the prior request cannot still complete. Recovery reloads the
+stored identity and writes an audit
 containing actor, bounded reason, prior state and outcome. Contact recovery verifies the
 completed outbox and active mapping. Membership uncertainty can be completed by observing
 the exact remote membership; replay requires attestation that the earlier request cannot
@@ -81,3 +89,10 @@ attestation before clearing the connection/key blocker.
 
 No database transaction spans an HTTP request. The overall flow is resumable and locally
 idempotent, but it is neither remotely atomic nor exactly once.
+
+The shared segment key is mandatory for independent events that represent the same business
+target. The 30-delivery acceptance covers an existing owned static segment and a missing
+initial target with explicit create-if-absent, using multiple processes and recovery polling.
+It is not campaign execution or a throughput guarantee. Create-if-absent never means that an
+already associated segment deleted later may be recreated automatically; that case remains
+blocked for operator repair.

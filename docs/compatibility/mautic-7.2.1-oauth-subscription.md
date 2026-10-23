@@ -43,6 +43,34 @@ ownership checks and API not-found cleanup confirmation. It never uses the persi
 Task 07H contact. A run is not compatibility evidence unless its result and request
 counts are recorded here.
 
+The much larger two-scenario burst has a distinct opt-in and command:
+
+```bash
+MAUTIC_OAUTH_FIXTURE_TESTS=1 MAUTIC_OAUTH_SUBSCRIPTION_BURST_TESTS=1 composer test:oauth-subscription-burst
+```
+
+It creates only cryptographically named resources owned by that run, schedules 30 arrivals
+over `MAUTIC_OAUTH_SUBSCRIPTION_BURST_INTERVAL_SECONDS` (60--120, default 60), drives four
+processes and bounded recovery polling, and records worker plus parent request attempts.
+It is not enabled by `MAUTIC_OAUTH_SUBSCRIPTION_TESTS`.
+
+## Task 07J-B live burst — 2026-10-23
+
+Both disposable live scenarios passed with 2 tests / 128 assertions in 152.35 seconds.
+Each scheduled 30 arrivals over 60 seconds and used four independent PHP workers. All 30
+intents completed, all 30 distinct contacts were mapped to the intended remote contacts,
+and all 30 exact memberships were observed in the single expected segment. The existing
+target dispatched zero segment creates; the missing create-if-absent target dispatched
+exactly one. No failed, blocked or ambiguous state remained, and selected identical-event
+replays added no contact, segment or intent work.
+
+Each scenario recorded 217 operation attempts and 93 cleanup attempts. The final typed
+contact read retained the exact known non-empty manual DNC metadata. Ownership-checked
+cleanup re-read every generated email and the exact generated segment identity, deleted
+all 30 contacts and the segment, and confirmed every API not-found result. The ignored
+mode-0600 evidence records only run hashes, completion/cleanup outcomes and request counts.
+No real host application, campaign entry or email delivery was exercised.
+
 ## Verified run — 2026-10-23
 
 The final separately gated run passed 1 test / 14 assertions. Its operation phase used

@@ -31,15 +31,19 @@ return new class extends Migration
             $table->string('status', 24);
             $table->string('stage', 32);
             $table->unsignedInteger('attempts')->default(0);
+            $table->unsignedInteger('membership_read_attempts')->default(0);
+            $table->unsignedInteger('membership_write_attempts')->default(0);
             $table->unsignedBigInteger('remote_contact_id')->nullable();
             $table->unsignedBigInteger('remote_segment_id')->nullable();
             $table->string('lease_owner', 64)->nullable();
             $table->unsignedBigInteger('lease_generation')->default(0);
             $table->unsignedBigInteger('lease_expires_at')->nullable();
+            $table->unsignedBigInteger('next_attempt_at')->nullable();
+            $table->string('last_failure_kind', 32)->nullable();
             $table->string('last_error_code', 64)->nullable();
             $table->unsignedBigInteger('completed_at')->nullable();
             $table->timestamps();
-            $table->index(['status', 'lease_expires_at'], 'mautic_subscription_recovery_index');
+            $table->index(['status', 'next_attempt_at', 'lease_expires_at'], 'mautic_subscription_recovery_index');
             $table->index(['connection_hash', 'segment_key_hash'], 'mautic_subscription_target_index');
         });
 

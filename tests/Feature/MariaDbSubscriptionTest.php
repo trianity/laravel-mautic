@@ -56,6 +56,8 @@ it('verifies canonical subscription storage and conditional recovery on disposab
         (require dirname(__DIR__, 2).'/database/migrations/create_mautic_contact_outbox.php.stub')->up();
         (require dirname(__DIR__, 2).'/database/migrations/create_mautic_subscription_delivery.php.stub')->up();
         expect($schema->hasColumn('mautic_subscription_intents', 'lease_generation'))->toBeTrue()
+            ->and($schema->hasColumn('mautic_subscription_intents', 'next_attempt_at'))->toBeTrue()
+            ->and($schema->hasColumn('mautic_subscription_intents', 'membership_read_attempts'))->toBeTrue()
             ->and($schema->hasTable('mautic_subscription_audits'))->toBeTrue();
 
         $clock = new class implements Clock
@@ -101,10 +103,11 @@ it('verifies canonical subscription storage and conditional recovery on disposab
 
         DB::connection('subscription-mariadb')->table('mautic_subscription_intents')
             ->where('operation_id', $captured->operationId)->update([
-                'status' => 'failed', 'stage' => 'membership_in_flight',
+                'status' => 'failed', 'stage' => 'segment_ready',
                 'remote_contact_id' => 42, 'remote_segment_id' => 91,
                 'lease_owner' => null, 'lease_expires_at' => null,
-                'last_error_code' => 'membership_write_failed',
+                'last_failure_kind' => 'validation',
+                'last_error_code' => 'membership_rejected_validation',
             ]);
         $subscription->operatorReplayMembership(
             $captured->operationId, 'mariadb-operator', 'definite-failure',

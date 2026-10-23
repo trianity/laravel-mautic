@@ -220,6 +220,8 @@ final class MauticServiceProvider extends ServiceProvider
                 $app->make(ContactMappingRepository::class),
                 $app->make(SubscriptionTransport::class),
                 (int) $app['config']->get('mautic.subscription.lease_seconds', 30),
+                (int) $app['config']->get('mautic.subscription.max_membership_attempts', 5),
+                (int) $app['config']->get('mautic.subscription.maximum_delay_seconds', 300),
             );
         });
         $this->app->singleton(DatabaseWebhookInboxStore::class, function ($app): DatabaseWebhookInboxStore {

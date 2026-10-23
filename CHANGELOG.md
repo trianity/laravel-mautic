@@ -64,6 +64,9 @@
 
 ### Fixed
 
+- Separate membership preflight reads, mutation dispatch and post-write verification into
+  evidence-correct durable states; add bounded `Retry-After` scheduling, conservative 5xx
+  and malformed-response handling, and four-process 30-subscription SQLite/MariaDB coverage.
 - Fence subscription and segment-provisioning transitions with exact generations, retain
   create IDs before association, persist cross-event create uncertainty, and add audited,
   attested recovery instead of lease-expiry mutation replay.

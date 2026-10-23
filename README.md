@@ -377,7 +377,15 @@ silently edited or converted from dynamic to static.
 
 Run the normal contact outbox worker/poller and the subscription job queue, and schedule
 `SubscriptionPoller::recover()` for lost dispatches. Inspect `SubscriptionRecord` for
-pending, completed, failed, blocked or ambiguous state. `SubscriptionOperator` can
+pending, retry-wait, completed, failed, blocked or ambiguous state. A membership GET
+failure before POST retains the completed contact and segment prerequisites. Transient
+authentication, timeout, throttling, server and transport failures use a durable
+`next_attempt_at` delay, honor numeric `Retry-After`, and stop after
+`subscription.max_membership_attempts` (default 5); polling and queue redelivery cannot
+bypass that time. A non-retryable or exhausted preflight read is explicitly resumable
+without uncertain-write attestation because no POST was sent.
+
+`SubscriptionOperator` can
 resume a repaired contact prerequisite, confirm an observed membership, resume a definite
 membership-write failure, authorize replay only with explicit prior-request attestation,
 or associate a separately verified segment after an ambiguous create. Operator recovery is
@@ -394,6 +402,24 @@ Mautic supplies no conditional segment-create primitive, so the package coordina
 own workers but cannot fence unrelated external creators. The local flow is resumable,
 not remotely atomic or exactly once. See
 [Decision 006](docs/decisions/006-subscription-delivery.md).
+
+The opt-in `composer test:mariadb-subscription-burst` acceptance runs two 30-contact,
+four-process scenarios against only the configured disposable MariaDB test database: an
+owned static segment already exists, or one missing segment is coordinated and created.
+This is a modest concurrency correctness test, not a production latency/capacity claim and
+not a Mautic campaign or email-delivery test. An association to a segment later deleted in
+Mautic remains blocked; create-if-absent applies only to initial provisioning and does not
+recreate a deleted associated business resource.
+
+The real-Mautic counterpart is separately gated from every other live suite:
+
+```bash
+MAUTIC_OAUTH_FIXTURE_TESTS=1 MAUTIC_OAUTH_SUBSCRIPTION_BURST_TESTS=1 composer test:oauth-subscription-burst
+```
+
+It additionally requires the established OAuth fixture gates/disposable acknowledgement
+and accepts `MAUTIC_OAUTH_SUBSCRIPTION_BURST_INTERVAL_SECONDS=60..120`. It creates and
+cleans only cryptographically named owned resources. Do not enable it on production.
 
 ## Verified webhook inbox
 

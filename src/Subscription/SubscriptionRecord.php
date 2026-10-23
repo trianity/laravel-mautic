@@ -22,11 +22,15 @@ final readonly class SubscriptionRecord
         public SubscriptionStatus $status,
         public SubscriptionStage $stage,
         public int $attempts,
+        public int $membershipReadAttempts,
+        public int $membershipWriteAttempts,
         public ?int $remoteContactId,
         public ?int $remoteSegmentId,
         public ?string $leaseOwner,
         public int $leaseGeneration,
         public ?int $leaseExpiresAt,
+        public ?int $nextAttemptAt,
+        public ?string $lastFailureKind,
         public ?string $lastErrorCode,
     ) {}
 }

@@ -54,6 +54,8 @@
         "test:oauth-restriction-read": "pest --configuration=phpunit.oauth-fixture.xml --filter='existing manual restriction'",
         "test:oauth-restriction-write": "pest --configuration=phpunit.oauth-fixture.xml --filter='restriction write scenarios'",
         "test:oauth-subscription": "pest --configuration=phpunit.oauth-fixture.xml --filter='durable subscription delivery'",
+        "test:oauth-subscription-burst": "pest --configuration=phpunit.oauth-fixture.xml --filter='30-contact subscription burst'",
+        "test:mariadb-subscription-burst": "pest tests/Integration/SubscriptionBurstProcessTest.php --group=mariadb-subscription-burst",
         "format": "pint",
         "format:check": "pint --test",
         "analyse": "phpstan analyse --memory-limit=1G",

@@ -8,6 +8,7 @@ enum SubscriptionStatus: string
 {
     case Pending = 'pending';
     case Processing = 'processing';
+    case RetryWait = 'retry_wait';
     case Completed = 'completed';
     case Failed = 'failed';
     case Blocked = 'blocked';

@@ -571,3 +571,180 @@ it('completes membership uncertainty only after observing the exact remote membe
     expect($store->get($record->operationId)?->status)->toBe(SubscriptionStatus::Completed)
         ->and($store->audits($record->operationId)[0]->outcome)->toBe('remote_membership_verified');
 });
+
+it('durably delays a transient membership preflight read without sending a mutation', function () {
+    Queue::fake();
+    $history = [];
+    useSubscriptionResponses([
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":1,"lists":{"9":{"id":9,"name":"Offer 74 paid subscribers","alias":"owned-offer-74-paid","isPublished":true,"isGlobal":true,"filters":[]}}}'),
+        new Response(503, ['Content-Type' => 'application/json', 'Retry-After' => '7'], '{"errors":[{"code":503,"message":"busy"}]}'),
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":0,"lists":[]}'),
+        new Response(200, ['Content-Type' => 'application/json'], '{"success":1}'),
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":1,"lists":{"9":{"id":9,"name":"Existing","alias":"existing"}}}'),
+    ], $history);
+    [$delivery] = subscriptionServices();
+    $operationId = makeSubscriptionContactReady($delivery, 'membership-preflight-retry');
+    $clock = new class implements Clock
+    {
+        public int $time = 2_000;
+
+        public function now(): int
+        {
+            return $this->time;
+        }
+    };
+    $store = new DatabaseSubscriptionStore(DB::getFacadeRoot(), $clock, 'subscription-test');
+    $processor = new SubscriptionProcessor(
+        $store,
+        new DatabaseOutboxStore(DB::getFacadeRoot(), $clock, 'subscription-test'),
+        new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'subscription-test'),
+        new ManagerSubscriptionTransport(app(MauticManager::class)),
+        30,
+        3,
+    );
+
+    $processor->process($operationId);
+    $waiting = $store->get($operationId);
+    expect($waiting?->lastErrorCode)->toBe('membership_preflight_remote_server')
+        ->and($waiting?->status)->toBe(SubscriptionStatus::RetryWait)
+        ->and($waiting?->stage)->toBe(SubscriptionStage::SegmentReady)
+        ->and($waiting?->nextAttemptAt)->toBe(2_007)
+        ->and($waiting?->membershipReadAttempts)->toBe(1)
+        ->and(array_column(array_map(static fn ($entry) => [
+            'method' => $entry['request']->getMethod(),
+        ], $history), 'method'))->toBe(['GET', 'GET']);
+
+    $processor->process($operationId);
+    expect($history)->toHaveCount(2)
+        ->and($store->recoverable(10))->toBe([]);
+
+    $clock->time = 2_007;
+    expect($store->recoverable(10))->toBe([$operationId]);
+    $processor->process($operationId);
+
+    expect($store->get($operationId)?->lastErrorCode)->toBeNull()
+        ->and($store->get($operationId)?->status)->toBe(SubscriptionStatus::Completed)
+        ->and(array_map(static fn ($entry) => $entry['request']->getMethod(), $history))
+        ->toBe(['GET', 'GET', 'GET', 'POST', 'GET'])
+        ->and(DB::connection('subscription-test')->table('mautic_outbox_commands')->count())->toBe(1)
+        ->and(DB::connection('subscription-test')->table('mautic_subscription_segments')->count())->toBe(1);
+});
+
+it('makes a permanent membership preflight failure actionable and recoverable without attestation', function () {
+    Queue::fake();
+    $history = [];
+    useSubscriptionResponses([
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":1,"lists":{"9":{"id":9,"name":"Offer 74 paid subscribers","alias":"owned-offer-74-paid","isPublished":true,"isGlobal":true,"filters":[]}}}'),
+        new Response(400, ['Content-Type' => 'application/json'], '{"errors":[{"code":400,"message":"invalid read"}]}'),
+    ], $history);
+    [$delivery, $store] = subscriptionServices();
+    $operationId = makeSubscriptionContactReady($delivery, 'membership-preflight-permanent');
+    $outbox = new DatabaseOutboxStore(DB::getFacadeRoot(), subscriptionClock(), 'subscription-test');
+    $mappings = new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'subscription-test');
+    $transport = new ManagerSubscriptionTransport(app(MauticManager::class));
+    (new SubscriptionProcessor($store, $outbox, $mappings, $transport))->process($operationId);
+
+    $failed = $store->get($operationId);
+    expect($failed?->status)->toBe(SubscriptionStatus::Failed)
+        ->and($failed?->stage)->toBe(SubscriptionStage::SegmentReady)
+        ->and($failed?->lastFailureKind)->toBe('validation')
+        ->and($failed?->lastErrorCode)->toBe('membership_preflight_validation')
+        ->and($failed?->membershipReadAttempts)->toBe(1)
+        ->and(array_map(static fn ($entry) => $entry['request']->getMethod(), $history))->toBe(['GET', 'GET']);
+
+    (new SubscriptionOperator($store, $transport, $outbox, $mappings))
+        ->resumeMembershipFailure($operationId, 'test-operator', 'preflight-fixed');
+    useSubscriptionResponses([
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":0,"lists":[]}'),
+        new Response(200, ['Content-Type' => 'application/json'], '{"success":1}'),
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":1,"lists":{"9":{"id":9,"name":"Existing","alias":"existing"}}}'),
+    ]);
+    app()->forgetInstance(MauticManager::class);
+    (new SubscriptionProcessor(
+        $store, $outbox, $mappings, new ManagerSubscriptionTransport(app(MauticManager::class)),
+    ))->process($operationId);
+
+    expect($store->get($operationId)?->status)->toBe(SubscriptionStatus::Completed)
+        ->and(DB::connection('subscription-test')->table('mautic_outbox_commands')->count())->toBe(1)
+        ->and(DB::connection('subscription-test')->table('mautic_subscription_segments')->count())->toBe(1);
+});
+
+it('distinguishes rejected membership writes from possibly applied responses', function (Response $response, SubscriptionStatus $status, string $code) {
+    Queue::fake();
+    $history = [];
+    useSubscriptionResponses([
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":1,"lists":{"9":{"id":9,"name":"Offer 74 paid subscribers","alias":"owned-offer-74-paid","isPublished":true,"isGlobal":true,"filters":[]}}}'),
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":0,"lists":[]}'),
+        $response,
+    ], $history);
+    [$delivery, $store] = subscriptionServices();
+    $operationId = makeSubscriptionContactReady($delivery, 'membership-classification-'.$code);
+    $outbox = new DatabaseOutboxStore(DB::getFacadeRoot(), subscriptionClock(), 'subscription-test');
+    $mappings = new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'subscription-test');
+    $transport = new ManagerSubscriptionTransport(app(MauticManager::class));
+    (new SubscriptionProcessor($store, $outbox, $mappings, $transport))->process($operationId);
+
+    expect($store->get($operationId)?->status)->toBe($status)
+        ->and($store->get($operationId)?->lastErrorCode)->toBe($code)
+        ->and(array_map(static fn ($entry) => $entry['request']->getMethod(), $history))->toBe(['GET', 'GET', 'POST']);
+    if ($status === SubscriptionStatus::Failed) {
+        (new SubscriptionOperator($store, $transport, $outbox, $mappings))
+            ->resumeMembershipFailure($operationId, 'test-operator', 'proved-rejection');
+        expect($store->get($operationId)?->status)->toBe(SubscriptionStatus::Pending);
+    } else {
+        expect(fn () => (new SubscriptionOperator($store, $transport, $outbox, $mappings))
+            ->resumeMembershipFailure($operationId, 'test-operator', 'not-proved'))
+            ->toThrow(RuntimeException::class);
+    }
+})->with([
+    'definite validation rejection' => [
+        new Response(422, ['Content-Type' => 'application/json'], '{"errors":[{"code":422,"message":"rejected"}]}'),
+        SubscriptionStatus::Failed,
+        'membership_rejected_validation',
+    ],
+    'server response is uncertain' => [
+        new Response(503, ['Content-Type' => 'application/json'], '{"errors":[{"code":503,"message":"failed"}]}'),
+        SubscriptionStatus::Ambiguous,
+        'membership_mutation_remote_server',
+    ],
+    'malformed response is uncertain' => [
+        new Response(200, ['Content-Type' => 'application/json'], '{"errors":"unusable"}'),
+        SubscriptionStatus::Ambiguous,
+        'membership_mutation_unexpected_response',
+    ],
+]);
+
+it('uses read-only recovery after membership verification fails', function () {
+    Queue::fake();
+    $history = [];
+    useSubscriptionResponses([
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":1,"lists":{"9":{"id":9,"name":"Offer 74 paid subscribers","alias":"owned-offer-74-paid","isPublished":true,"isGlobal":true,"filters":[]}}}'),
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":0,"lists":[]}'),
+        new Response(200, ['Content-Type' => 'application/json'], '{"success":1}'),
+        new Response(503, ['Content-Type' => 'application/json'], '{"errors":[{"code":503,"message":"busy"}]}'),
+    ], $history);
+    [$delivery, $store] = subscriptionServices();
+    $operationId = makeSubscriptionContactReady($delivery, 'membership-verification-read');
+    $outbox = new DatabaseOutboxStore(DB::getFacadeRoot(), subscriptionClock(), 'subscription-test');
+    $mappings = new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'subscription-test');
+    (new SubscriptionProcessor(
+        $store, $outbox, $mappings, new ManagerSubscriptionTransport(app(MauticManager::class)),
+    ))->process($operationId);
+
+    expect($store->get($operationId)?->status)->toBe(SubscriptionStatus::Ambiguous)
+        ->and($store->get($operationId)?->lastErrorCode)->toBe('membership_verification_remote_server')
+        ->and(array_map(static fn ($entry) => $entry['request']->getMethod(), $history))
+        ->toBe(['GET', 'GET', 'POST', 'GET']);
+
+    $confirmationHistory = [];
+    useSubscriptionResponses([
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":1,"lists":{"9":{"id":9,"name":"Existing","alias":"existing"}}}'),
+    ], $confirmationHistory);
+    app()->forgetInstance(MauticManager::class);
+    (new SubscriptionOperator(
+        $store, new ManagerSubscriptionTransport(app(MauticManager::class)), $outbox, $mappings,
+    ))->confirmMembership($operationId, 'test-operator', 'membership-observed');
+
+    expect($store->get($operationId)?->status)->toBe(SubscriptionStatus::Completed)
+        ->and(array_map(static fn ($entry) => $entry['request']->getMethod(), $confirmationHistory))->toBe(['GET']);
+});

@@ -44,6 +44,8 @@ return [
         'audits_table' => 'mautic_subscription_audits',
         'queue' => null,
         'lease_seconds' => 30,
+        'max_membership_attempts' => 5,
+        'maximum_delay_seconds' => 300,
     ],
 
     'inbox' => [

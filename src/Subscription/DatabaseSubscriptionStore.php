@@ -76,10 +76,13 @@ final readonly class DatabaseSubscriptionStore
             (string) $row->event_key, (string) $row->semantic_hash, (int) $row->contact_revision, $contact,
             SegmentTarget::fromPayload($segment), SubscriptionStatus::from((string) $row->status),
             SubscriptionStage::from((string) $row->stage), (int) $row->attempts,
+            (int) $row->membership_read_attempts, (int) $row->membership_write_attempts,
             $row->remote_contact_id === null ? null : (int) $row->remote_contact_id,
             $row->remote_segment_id === null ? null : (int) $row->remote_segment_id,
             $row->lease_owner === null ? null : (string) $row->lease_owner, (int) $row->lease_generation,
             $row->lease_expires_at === null ? null : (int) $row->lease_expires_at,
+            $row->next_attempt_at === null ? null : (int) $row->next_attempt_at,
+            $row->last_failure_kind === null ? null : (string) $row->last_failure_kind,
             $row->last_error_code === null ? null : (string) $row->last_error_code,
         );
     }
@@ -90,10 +93,14 @@ final readonly class DatabaseSubscriptionStore
         if ($limit < 1 || $limit > 1000) {
             throw new RuntimeException('Subscription recovery limit must be between 1 and 1000.');
         }
-        $rows = $this->database()->table($this->intentsTable)->where(function ($query): void {
+        $now = $this->clock->now();
+        $rows = $this->database()->table($this->intentsTable)->where(function ($query) use ($now): void {
             $query->where('status', SubscriptionStatus::Pending->value)->orWhere(function ($query): void {
                 $query->where('status', SubscriptionStatus::Processing->value)
                     ->where('lease_expires_at', '<=', $this->clock->now());
+            })->orWhere(function ($query) use ($now): void {
+                $query->where('status', SubscriptionStatus::RetryWait->value)
+                    ->where('next_attempt_at', '<=', $now);
             });
         })->orderBy('id')->limit($limit)->pluck('operation_id');
 
@@ -107,6 +114,10 @@ final readonly class DatabaseSubscriptionStore
             return null;
         }
         $now = $this->clock->now();
+        if ($record->status === SubscriptionStatus::RetryWait
+            && ($record->nextAttemptAt ?? PHP_INT_MAX) > $now) {
+            return null;
+        }
         if ($record->status === SubscriptionStatus::Processing) {
             if (($record->leaseExpiresAt ?? PHP_INT_MAX) > $now) {
                 return null;
@@ -127,6 +138,7 @@ final readonly class DatabaseSubscriptionStore
         if ($this->observed($record)->update([
             'status' => SubscriptionStatus::Processing->value, 'attempts' => $record->attempts + 1,
             'lease_owner' => $owner, 'lease_generation' => $generation, 'lease_expires_at' => $expiresAt,
+            'next_attempt_at' => null,
             'updated_at' => $this->timestamp(),
         ]) !== 1) {
             return null;
@@ -153,10 +165,16 @@ final readonly class DatabaseSubscriptionStore
         }
     }
 
+    public function now(): int
+    {
+        return $this->clock->now();
+    }
+
     public function pending(SubscriptionClaim $claim, SubscriptionStage $stage, ?int $contactId = null): void
     {
         $this->transition($claim, ['status' => SubscriptionStatus::Pending->value, 'stage' => $stage->value,
-            'remote_contact_id' => $contactId, 'lease_owner' => null, 'lease_expires_at' => null]);
+            'remote_contact_id' => $contactId, 'lease_owner' => null, 'lease_expires_at' => null,
+            'next_attempt_at' => null]);
     }
 
     public function segmentReady(SubscriptionClaim $claim, int $contactId, int $segmentId): void
@@ -173,23 +191,91 @@ final readonly class DatabaseSubscriptionStore
 
     public function membershipInFlight(SubscriptionClaim $claim): void
     {
-        $this->transition($claim, ['stage' => SubscriptionStage::MembershipInFlight->value]);
+        $this->transition($claim, [
+            'stage' => SubscriptionStage::MembershipInFlight->value,
+            'membership_write_attempts' => $claim->record->membershipWriteAttempts + 1,
+        ]);
+    }
+
+    public function retryMembershipRead(
+        SubscriptionClaim $claim,
+        int $nextAttemptAt,
+        string $failureKind,
+        string $code,
+    ): void {
+        $this->transition($claim, [
+            'status' => SubscriptionStatus::RetryWait->value,
+            'stage' => SubscriptionStage::SegmentReady->value,
+            'membership_read_attempts' => $claim->record->membershipReadAttempts + 1,
+            'next_attempt_at' => $nextAttemptAt,
+            'lease_owner' => null,
+            'lease_expires_at' => null,
+            'last_failure_kind' => $failureKind,
+            'last_error_code' => $code,
+        ]);
+    }
+
+    public function retryMembershipWrite(
+        SubscriptionClaim $claim,
+        int $nextAttemptAt,
+        string $failureKind,
+        string $code,
+    ): void {
+        $this->transition($claim, [
+            'status' => SubscriptionStatus::RetryWait->value,
+            'stage' => SubscriptionStage::SegmentReady->value,
+            'next_attempt_at' => $nextAttemptAt,
+            'lease_owner' => null,
+            'lease_expires_at' => null,
+            'last_failure_kind' => $failureKind,
+            'last_error_code' => $code,
+        ]);
+    }
+
+    public function rejectMembership(
+        SubscriptionClaim $claim,
+        string $failureKind,
+        string $code,
+        int $segmentId,
+        bool $incrementReadAttempts = false,
+    ): void {
+        $values = [
+            'status' => SubscriptionStatus::Failed->value,
+            'stage' => SubscriptionStage::SegmentReady->value,
+            'remote_segment_id' => $segmentId,
+            'lease_owner' => null,
+            'lease_expires_at' => null,
+            'next_attempt_at' => null,
+            'last_failure_kind' => $failureKind,
+            'last_error_code' => $code,
+        ];
+        if ($incrementReadAttempts) {
+            $values['membership_read_attempts'] = $claim->record->membershipReadAttempts + 1;
+        }
+        $this->transition($claim, $values);
     }
 
     public function complete(SubscriptionClaim $claim): void
     {
         $this->transition($claim, ['status' => SubscriptionStatus::Completed->value,
             'stage' => SubscriptionStage::Completed->value, 'completed_at' => $this->clock->now(),
-            'lease_owner' => null, 'lease_expires_at' => null, 'last_error_code' => null]);
+            'lease_owner' => null, 'lease_expires_at' => null, 'next_attempt_at' => null,
+            'last_failure_kind' => null, 'last_error_code' => null]);
     }
 
-    public function stop(SubscriptionClaim $claim, SubscriptionStatus $status, string $code, ?int $segmentId = null): void
-    {
+    public function stop(
+        SubscriptionClaim $claim,
+        SubscriptionStatus $status,
+        string $code,
+        ?int $segmentId = null,
+        ?string $failureKind = null,
+    ): void {
         if (! in_array($status, [SubscriptionStatus::Failed, SubscriptionStatus::Blocked, SubscriptionStatus::Ambiguous], true)) {
             throw new RuntimeException('Only actionable terminal subscription states may be stored.');
         }
         $this->transition($claim, ['status' => $status->value, 'remote_segment_id' => $segmentId,
-            'lease_owner' => null, 'lease_expires_at' => null, 'last_error_code' => $code]);
+            'lease_owner' => null, 'lease_expires_at' => null, 'next_attempt_at' => null,
+            'last_failure_kind' => $failureKind, 'last_error_code' => $code]);
     }
 
     public function associatedSegment(string $connection, string $key): ?int
@@ -232,7 +318,10 @@ final readonly class DatabaseSubscriptionStore
             return new SegmentProvisioningClaim($connection, $key, $operationId, $owner, 1, $expiresAt);
         }
         $row = $this->database()->table($this->locksTable)->where('segment_key_hash', $hash)->first();
-        if ($row === null || (string) $row->connection !== $connection || (string) $row->segment_key !== $key) {
+        if ($row === null) {
+            return null;
+        }
+        if ((string) $row->connection !== $connection || (string) $row->segment_key !== $key) {
             throw new SegmentConflict('Stored segment provisioning identity is invalid.');
         }
         if ((string) $row->state === 'create_in_flight') {
@@ -349,6 +438,8 @@ final readonly class DatabaseSubscriptionStore
             'status' => SubscriptionStatus::Completed->value,
             'stage' => SubscriptionStage::Completed->value,
             'completed_at' => $this->clock->now(),
+            'next_attempt_at' => null,
+            'last_failure_kind' => null,
             'last_error_code' => null,
         ]);
     }
@@ -359,6 +450,8 @@ final readonly class DatabaseSubscriptionStore
         $this->operatorTransition($record, 'authorize_membership_replay', $actor, $reasonCode, 'prior_request_cannot_complete', [
             'status' => SubscriptionStatus::Pending->value,
             'stage' => SubscriptionStage::SegmentReady->value,
+            'next_attempt_at' => null,
+            'last_failure_kind' => null,
             'last_error_code' => null,
         ]);
     }
@@ -458,10 +551,17 @@ final readonly class DatabaseSubscriptionStore
     private function requiredMembershipRecovery(string $operationId): SubscriptionRecord
     {
         $record = $this->requiredActionable($operationId);
-        if ($record->stage !== SubscriptionStage::MembershipInFlight || ! in_array($record->lastErrorCode, [
-            'membership_write_failed', 'membership_worker_lost', 'membership_outcome_ambiguous',
-            'membership_not_verified', 'membership_verification_uncertain',
-        ], true) || $record->remoteContactId === null || $record->remoteSegmentId === null) {
+        $definite = $record->status === SubscriptionStatus::Failed
+            && $record->stage === SubscriptionStage::SegmentReady
+            && (str_starts_with((string) $record->lastErrorCode, 'membership_rejected_')
+                || str_starts_with((string) $record->lastErrorCode, 'membership_preflight_'));
+        $uncertain = $record->stage === SubscriptionStage::MembershipInFlight
+            && ($record->lastErrorCode === 'membership_worker_lost'
+                || $record->lastErrorCode === 'membership_outcome_ambiguous'
+                || $record->lastErrorCode === 'membership_not_verified'
+                || str_starts_with((string) $record->lastErrorCode, 'membership_mutation_')
+                || str_starts_with((string) $record->lastErrorCode, 'membership_verification_'));
+        if ((! $definite && ! $uncertain) || $record->remoteContactId === null || $record->remoteSegmentId === null) {
             throw new RuntimeException('The subscription is not eligible for membership recovery.');
         }
 

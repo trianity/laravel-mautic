@@ -54,6 +54,30 @@ scope and the stronger possible future design.
 
 ## Verification
 
+## Membership failure phases and 30-subscription burst — 2026-10-23
+
+Task 07J-B separates the initial membership GET, mutation dispatch and verification GET.
+Transient preflight reads now use a durable bounded retry wait with server `Retry-After`;
+permanent/exhausted reads remain safely recoverable at the completed segment prerequisite.
+Only response-proved mutation rejection can resume without attestation. Server, malformed,
+unexpected and transport-ambiguous mutation results, plus post-write verification failures,
+retain the existing no-replay uncertainty contract and permit exact read-only confirmation.
+
+The public delivery path now has two reproducible 30-contact scenarios driven by four PHP
+processes, actual outbox/subscription processors, a deterministic provisioning barrier and
+recovery polling. Existing targets dispatch zero creates; missing create-if-absent targets
+dispatch one. SQLite passed 2 tests / 57 assertions and the opt-in disposable MariaDB run
+passed 2 tests / 72 assertions. A non-empty DNC fixture remained unchanged. This is bounded
+correctness evidence, not campaign, email, latency or production-capacity evidence. The
+separately gated disposable Mautic 7.2.1 burst passed both scenarios with 2 tests / 128
+assertions in 152.35 seconds. Each scenario scheduled 30 arrivals over 60 seconds, used four
+workers, completed and remotely verified all 30 memberships, and retained the known DNC.
+The existing target dispatched zero creates and the missing target exactly one. Each used
+217 operation and 93 ownership-checked cleanup attempts; all owned contacts and segments
+were deleted and confirmed absent. Final `composer check` before the live run passed
+Composer validation, Pint, Larastan level 8 and 313 tests / 1495 assertions with seven
+opt-in tests skipped.
+
 ## Subscription concurrency and recovery correction — 2026-10-23
 
 Task 07J-A replaces status-only subscription claims with exact owner/generation/expiry

@@ -185,13 +185,25 @@ blocker, never automatic create takeover. A returned remote ID is captured befor
 and retained through response-validation or local-persistence failure where storage remains
 available.
 
-Membership is read before the mutation and again after it. Definite write failures and
-uncertain outcomes are different durable states; uncertainty is not automatically
-replayed. Contact completion survives later failures. The flow never changes DNC or
+Membership is read before the mutation and again after it. A failed pre-mutation read
+cannot be an uncertain write: transient typed failures enter a durable, bounded retry wait
+that respects `Retry-After`, while permanent/exhausted failures require an audited explicit
+resume without attestation. The POST begins only after the membership-in-flight marker.
+Only an HTTP response proving rejection uses the definite recovery path; 5xx, malformed or
+unexpected responses remain ambiguous. A failed post-mutation verification read also
+remains ambiguous and may be completed by an exact read-only observation. Uncertainty is
+not automatically replayed. Contact and resolved-segment completion survive later failures.
+The flow never changes DNC or
 consent and does not imply campaign entry or email delivery. Verified operator recovery is
 bounded, identity-checked and audited; replay after uncertain membership or create work
 requires explicit attestation that the earlier request cannot still complete. See
 `docs/decisions/006-subscription-delivery.md`.
+
+The acceptance suite exercises 30 distinct durable deliveries sharing one stable segment
+key through four independent processes, actual contact outbox and subscription processors,
+and recovery polling on SQLite and separately gated disposable MariaDB. Existing-target and
+initial create-if-absent scenarios are distinct. A stored association whose remote segment
+was later deleted is still a blocker and is never treated as permission to recreate it.
 
 ## Incoming delivery
 
