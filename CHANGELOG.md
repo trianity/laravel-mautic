@@ -56,6 +56,11 @@
   resulting-state outcomes and explicit stock channel-level release semantics.
 - A separately gated OAuth restriction-write acceptance suite with isolated disposable
   scenarios, bounded fallback reads, exact ownership cleanup and sanitized evidence.
+- Typed static-segment inspection and creation plus durable subscription delivery built
+  on contact identity/outbox revisions, stable event and segment keys, shared segment
+  provisioning leases, verified membership and explicit operator recovery.
+- A separately gated OAuth subscription acceptance path using the durable public API,
+  owned cryptographic fixtures, bounded requests and ownership-checked cleanup.
 
 ### Fixed
 

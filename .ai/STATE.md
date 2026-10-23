@@ -10,6 +10,8 @@
 - Immutable normalized contact DTOs, bounded search and contact segment memberships.
 - Typed DNC metadata and reason reads with explicit unavailable bounce-subtype evidence.
 - Explicit typed manual email blocks and accepted channel-level restriction release.
+- Typed published static-segment inspection, bounded exact-alias discovery and explicit
+  empty-filter segment creation.
 - Normalized read failures, read-operation safety metadata and deterministic read fake.
 - Allowlisted contact creates, PATCH-only partial updates and checked batch writes.
 - Manual segment membership commands, mutation safety metadata and deterministic fake.
@@ -21,6 +23,9 @@
 - Transactional outgoing contact outbox with after-commit dispatch, recovery polling,
   sequential aggregate revisions, conservative lease-expiry recovery, connection-level
   OAuth blockers and audited ambiguous create/update recovery.
+- Durable accepted-subscription delivery with transactionally captured contact intent,
+  stable replay identity, connection/key segment associations, process-coordinated
+  provisioning and read-verified membership that preserves DNC.
 - Opt-in verified webhook inbox with connection-specific raw-body HMAC authentication,
   encrypted durable events, asynchronous recovery, shared contact leases and explicit
   host-owned inbound projection through mapping and field-ownership policies.
@@ -48,6 +53,37 @@ not promise ownership or an atomic revision check; Decision 005 records this acc
 scope and the stronger possible future design.
 
 ## Verification
+
+## Durable subscription delivery — 2026-10-23
+
+Task 07J adds the concrete accepted-subscription flow without model observers or host
+business rules. The public command uses a named connection, byte-exact local reference,
+stable event key, positive contact revision, explicitly allowlisted contact fields and
+a stable host segment key. Identical event replay is idempotent and conflicting reuse is
+rejected. Capture requires the host transaction and the same configured database
+connection as identity and contact outbox storage.
+
+Typed segment operations inspect remote ID, exact alias, publication, visibility and
+filters, and create only an explicit published empty-filter definition. Subscription
+workers wait for the existing contact outbox and active mapping, coordinate provisioning
+through a shared database lease, persist the remote association, then add and read back
+membership. Definite failures, blockers and ambiguous outcomes remain distinct. No path
+releases DNC, restores consent, submits forms, enters campaigns or sends mail.
+
+Offline real-SDK and Testbench coverage includes canonical schema publication,
+rollback, after-commit dispatch recovery, stable replay/conflict, connection/key
+isolation, existing and created static targets, membership verification, and a real
+two-process SQLite provisioning race proving one coordinated create attempt. The OAuth
+subscription suite is separately gated by `MAUTIC_OAUTH_SUBSCRIPTION_TESTS=1`, the
+existing fixture gates and disposable acknowledgement. The final Mautic 7.2.1 run
+passed 1 test / 14 assertions with 15 operation attempts and six cleanup attempts. It
+completed a new contact into the prepared static segment, exact replay, a second event
+for the mapped contact, creation and use of an owned missing segment, and unchanged DNC.
+Exact ownership checks preceded cleanup; the owned contact and created segment were
+deleted and API not-found was confirmed. Sanitized mode-0600 evidence records only a
+run hash, outcomes and counts.
+
+## General verification policy
 
 See the dated entries below. Default tests exercise the real SDK with fake HTTP and do
 not contact a Mautic installation. Live-server checks have their own configuration and

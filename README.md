@@ -322,6 +322,74 @@ The package never drops or resets a host database automatically. Do not run
 `migrate:fresh` against a host application database or a production database copy;
 perform any scoped recreation only in a confirmed disposable development environment.
 
+## Durable subscription delivery
+
+Subscription delivery is an explicit host business action; saving an arbitrary model
+never starts it. Publish the canonical subscription migration and keep its configured
+database connection equal to the identity and contact-outbox connections:
+
+```bash
+php artisan vendor:publish --tag=mautic-subscription-migrations
+php artisan migrate
+```
+
+After the host has authorized a free or paid subscription, save its contact and the
+delivery intent in the same transaction. Build `ContactFields` only from the outbound
+values produced by the explicit field-ownership mapping described above; never pass a
+model array.
+
+```php
+use Illuminate\Support\Facades\DB;
+use Trianity\LaravelMautic\Identity\LocalContactReference;
+use Trianity\LaravelMautic\Segment\StaticSegmentDefinition;
+use Trianity\LaravelMautic\Subscription\SegmentTarget;
+use Trianity\LaravelMautic\Subscription\SubscriptionCommand;
+use Trianity\LaravelMautic\Subscription\SubscriptionDelivery;
+use Trianity\LaravelMautic\Write\ContactFields;
+
+DB::transaction(function () use ($contact, $acceptedSubscription): void {
+    $contact->save();
+
+    app(SubscriptionDelivery::class)->record(new SubscriptionCommand(
+        connection: 'main',
+        localReference: new LocalContactReference('tenant:acme:contact', (string) $contact->id),
+        eventKey: 'accepted-subscription:'.$acceptedSubscription->id,
+        contactRevision: $contact->mautic_revision,
+        contactFields: ContactFields::fromArray(
+            ['email' => $contact->email, 'firstname' => $contact->first_name],
+            ['email', 'firstname'],
+        ),
+        segment: SegmentTarget::createIfAbsent(
+            'kaszanap-74-paid',
+            new StaticSegmentDefinition('Kaszanap 74 paid', 'kaszanap-74-paid'),
+        ),
+        source: 'accepted-subscription',
+    ));
+});
+```
+
+The event key identifies one accepted business event. An identical replay returns its
+existing delivery; conflicting reuse throws `SubscriptionConflict`. The segment key is
+a stable connection-scoped host key, not a display name. Use `SegmentTarget::existing()`
+with a verified remote ID when creation is forbidden, or `createIfAbsent()` with an
+explicit published empty-filter definition. Existing targets are inspected but never
+silently edited or converted from dynamic to static.
+
+Run the normal contact outbox worker/poller and the subscription job queue, and schedule
+`SubscriptionPoller::recover()` for lost dispatches. Inspect `SubscriptionRecord` for
+pending, completed, failed, blocked or ambiguous state. `SubscriptionOperator` can
+resume a definite membership-write failure, or associate a separately verified segment
+after an ambiguous create. It never blindly replays an uncertain create or membership.
+
+The worker waits for the durable contact revision and active mapping, provisions and
+persists the segment association under a shared database lease, then adds and reads back
+membership. It does not release DNC, renew consent, submit a form, start a campaign or
+send mail. Segment membership and campaign execution are separate Mautic behaviors.
+Mautic supplies no conditional segment-create primitive, so the package coordinates its
+own workers but cannot fence unrelated external creators. The local flow is resumable,
+not remotely atomic or exactly once. See
+[Decision 006](docs/decisions/006-subscription-delivery.md).
+
 ## Verified webhook inbox
 
 Webhook ingress is opt-in and the package registers no route. Publish the inbox

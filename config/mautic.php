@@ -35,6 +35,16 @@ return [
         'maximum_delay_seconds' => 300,
     ],
 
+    'subscription' => [
+        // Must equal identity.database_connection and outbox.database_connection.
+        'database_connection' => null,
+        'intents_table' => 'mautic_subscription_intents',
+        'segments_table' => 'mautic_subscription_segments',
+        'locks_table' => 'mautic_subscription_segment_locks',
+        'queue' => null,
+        'lease_seconds' => 30,
+    ],
+
     'inbox' => [
         'database_connection' => null,
         'deliveries_table' => 'mautic_webhook_deliveries',

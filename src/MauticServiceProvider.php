@@ -24,6 +24,7 @@ use Trianity\LaravelMautic\Contracts\OAuthStateRepository;
 use Trianity\LaravelMautic\Contracts\OAuthTokenEndpoint;
 use Trianity\LaravelMautic\Contracts\OAuthTokenRepository;
 use Trianity\LaravelMautic\Contracts\ReconciliationSource;
+use Trianity\LaravelMautic\Contracts\SubscriptionTransport;
 use Trianity\LaravelMautic\Contracts\WebhookSecretProvider;
 use Trianity\LaravelMautic\Exceptions\InvalidConfiguration;
 use Trianity\LaravelMautic\Http\GuzzleHttpClientFactory;
@@ -55,11 +56,18 @@ use Trianity\LaravelMautic\Reconciliation\DatabaseMappingRecovery;
 use Trianity\LaravelMautic\Reconciliation\DatabaseMauticDiagnostics;
 use Trianity\LaravelMautic\Reconciliation\DatabaseReconciliationStore;
 use Trianity\LaravelMautic\Reconciliation\MappingRecoveryService;
+use Trianity\LaravelMautic\Subscription\DatabaseSubscriptionStore;
+use Trianity\LaravelMautic\Subscription\SubscriptionDelivery;
+use Trianity\LaravelMautic\Subscription\SubscriptionDispatcher;
+use Trianity\LaravelMautic\Subscription\SubscriptionOperator;
+use Trianity\LaravelMautic\Subscription\SubscriptionPoller;
+use Trianity\LaravelMautic\Subscription\SubscriptionProcessor;
 use Trianity\LaravelMautic\Support\ApiLibraryAuthenticationFactory;
 use Trianity\LaravelMautic\Support\ApiLibraryConnectionFactory;
 use Trianity\LaravelMautic\Support\ManagerContactReaderProvider;
 use Trianity\LaravelMautic\Support\ManagerContactSyncTransport;
 use Trianity\LaravelMautic\Support\ManagerReconciliationSource;
+use Trianity\LaravelMautic\Support\ManagerSubscriptionTransport;
 
 final class MauticServiceProvider extends ServiceProvider
 {
@@ -76,6 +84,7 @@ final class MauticServiceProvider extends ServiceProvider
         $this->app->bindIf(ContactSyncTransport::class, ManagerContactSyncTransport::class);
         $this->app->bindIf(ContactReaderProvider::class, ManagerContactReaderProvider::class);
         $this->app->bindIf(ReconciliationSource::class, ManagerReconciliationSource::class);
+        $this->app->bindIf(SubscriptionTransport::class, ManagerSubscriptionTransport::class);
         $this->app->singletonIf(ContactMappingRepository::class, function ($app): ContactMappingRepository {
             $connection = $app['config']->get('mautic.identity.database_connection');
             $table = $app['config']->get('mautic.identity.mappings_table', 'mautic_contact_mappings');
@@ -174,6 +183,44 @@ final class MauticServiceProvider extends ServiceProvider
             );
         });
         $this->app->singleton(OutboxOperator::class);
+        $this->app->singleton(DatabaseSubscriptionStore::class, function ($app): DatabaseSubscriptionStore {
+            $connection = $this->subscriptionDatabaseConnection();
+            if ($connection !== $this->identityDatabaseConnection()
+                || $connection !== $this->outboxDatabaseConnection()) {
+                throw new InvalidConfiguration(
+                    'Atomic subscription capture requires subscription, identity and outbox storage on the same database connection.',
+                );
+            }
+
+            return new DatabaseSubscriptionStore(
+                $app['db'],
+                $app->make(Clock::class),
+                $connection,
+                $this->subscriptionTable('intents_table', 'mautic_subscription_intents'),
+                $this->subscriptionTable('segments_table', 'mautic_subscription_segments'),
+                $this->subscriptionTable('locks_table', 'mautic_subscription_segment_locks'),
+            );
+        });
+        $this->app->singleton(SubscriptionDispatcher::class, function ($app): SubscriptionDispatcher {
+            $queue = $app['config']->get('mautic.subscription.queue');
+
+            return new SubscriptionDispatcher(
+                $app->make(Queue::class),
+                is_string($queue) && $queue !== '' ? $queue : null,
+            );
+        });
+        $this->app->singleton(SubscriptionDelivery::class);
+        $this->app->singleton(SubscriptionPoller::class);
+        $this->app->singleton(SubscriptionOperator::class);
+        $this->app->singleton(SubscriptionProcessor::class, function ($app): SubscriptionProcessor {
+            return new SubscriptionProcessor(
+                $app->make(DatabaseSubscriptionStore::class),
+                $app->make(DatabaseOutboxStore::class),
+                $app->make(ContactMappingRepository::class),
+                $app->make(SubscriptionTransport::class),
+                (int) $app['config']->get('mautic.subscription.lease_seconds', 30),
+            );
+        });
         $this->app->singleton(DatabaseWebhookInboxStore::class, function ($app): DatabaseWebhookInboxStore {
             $connection = $app['config']->get('mautic.inbox.database_connection');
 
@@ -290,6 +337,11 @@ final class MauticServiceProvider extends ServiceProvider
             ];
             $this->publishes($reconciliationMigration, 'mautic-migrations');
             $this->publishes($reconciliationMigration, 'mautic-reconciliation-migrations');
+            $subscriptionMigration = [
+                __DIR__.'/../database/migrations/create_mautic_subscription_delivery.php.stub' => database_path('migrations/2026_10_19_050000_create_mautic_subscription_delivery.php'),
+            ];
+            $this->publishes($subscriptionMigration, 'mautic-migrations');
+            $this->publishes($subscriptionMigration, 'mautic-subscription-migrations');
             $this->commands([
                 ReconcileContactsCommand::class,
                 ReconcileMappingsCommand::class,
@@ -315,6 +367,27 @@ final class MauticServiceProvider extends ServiceProvider
     private function outboxTable(string $key, string $default): string
     {
         $table = $this->app->make(Repository::class)->get('mautic.outbox.'.$key, $default);
+
+        return is_string($table) && $table !== '' ? $table : $default;
+    }
+
+    private function outboxDatabaseConnection(): ?string
+    {
+        $name = $this->app->make(Repository::class)->get('mautic.outbox.database_connection');
+
+        return is_string($name) && $name !== '' ? $name : null;
+    }
+
+    private function subscriptionDatabaseConnection(): ?string
+    {
+        $name = $this->app->make(Repository::class)->get('mautic.subscription.database_connection');
+
+        return is_string($name) && $name !== '' ? $name : null;
+    }
+
+    private function subscriptionTable(string $key, string $default): string
+    {
+        $table = $this->app->make(Repository::class)->get('mautic.subscription.'.$key, $default);
 
         return is_string($table) && $table !== '' ? $table : $default;
     }

@@ -10,6 +10,7 @@ use Trianity\LaravelMautic\Exceptions\ContactNotFound;
 use Trianity\LaravelMautic\Exceptions\ContactUpdateTargetNotFound;
 use Trianity\LaravelMautic\Exceptions\MauticReadException;
 use Trianity\LaravelMautic\Exceptions\MauticWriteException;
+use Trianity\LaravelMautic\Exceptions\SegmentNotFound;
 use Trianity\LaravelMautic\Read\ReadFailureKind;
 use Trianity\LaravelMautic\Read\ReadOperation;
 use Trianity\LaravelMautic\Write\FailureKind;
@@ -147,6 +148,9 @@ final class SdkResponseBoundary
         if (in_array($operation, [ReadOperation::FindContact, ReadOperation::ListContactSegments], true)
             && $status === 404) {
             throw new ContactNotFound($connection, $operation);
+        }
+        if ($operation === ReadOperation::FindSegment && $status === 404) {
+            throw new SegmentNotFound($connection);
         }
 
         throw new MauticReadException(

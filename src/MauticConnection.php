@@ -14,12 +14,14 @@ use Trianity\LaravelMautic\Contracts\ContactReader;
 use Trianity\LaravelMautic\Contracts\ContactRestrictionWriter;
 use Trianity\LaravelMautic\Contracts\ContactWriter;
 use Trianity\LaravelMautic\Contracts\OAuthAuthenticationFailureProvider;
+use Trianity\LaravelMautic\Contracts\StaticSegmentGateway;
 use Trianity\LaravelMautic\Support\SdkConnectionReconciliationSource;
 use Trianity\LaravelMautic\Support\SdkContactDiscovery;
 use Trianity\LaravelMautic\Support\SdkContactReader;
 use Trianity\LaravelMautic\Support\SdkContactRestrictionWriter;
 use Trianity\LaravelMautic\Support\SdkContactWriter;
 use Trianity\LaravelMautic\Support\SdkResponseBoundary;
+use Trianity\LaravelMautic\Support\SdkStaticSegmentGateway;
 
 final readonly class MauticConnection
 {
@@ -62,6 +64,16 @@ final readonly class MauticConnection
     public function restrictionWrites(): ContactRestrictionWriter
     {
         return new SdkContactRestrictionWriter($this->contacts(), $this->name, $this->responseBoundary());
+    }
+
+    /** Package-owned static segment discovery, inspection and creation. */
+    public function staticSegments(): StaticSegmentGateway
+    {
+        return new SdkStaticSegmentGateway(
+            new Segments($this->auth, $this->apiUrl),
+            $this->name,
+            $this->responseBoundary(),
+        );
     }
 
     /** Stable, bounded contact pages for durable reconciliation. */

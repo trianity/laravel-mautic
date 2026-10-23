@@ -53,6 +53,7 @@
         "test:oauth-custom-field": "pest --configuration=phpunit.oauth-fixture.xml --filter='custom field lifecycle'",
         "test:oauth-restriction-read": "pest --configuration=phpunit.oauth-fixture.xml --filter='existing manual restriction'",
         "test:oauth-restriction-write": "pest --configuration=phpunit.oauth-fixture.xml --filter='restriction write scenarios'",
+        "test:oauth-subscription": "pest --configuration=phpunit.oauth-fixture.xml --filter='durable subscription delivery'",
         "format": "pint",
         "format:check": "pint --test",
         "analyse": "phpstan analyse --memory-limit=1G",

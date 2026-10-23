@@ -166,6 +166,27 @@ verified remote ID or confirm remote absence before retry, and every operator de
 is audited. Full details are in
 `docs/decisions/002-outbox-delivery.md`.
 
+## Durable subscription flow
+
+`SubscriptionDelivery` is a concrete orchestration over the existing identity and
+contact-outbox contracts, not a generic workflow engine. It records one stable accepted
+event and its contact command in the host transaction. Subscription, identity and
+outbox tables must use the same Laravel database connection; queue dispatch occurs only
+after commit and is recoverable through `SubscriptionPoller`.
+
+The processor requires the contact outbox revision to complete and an active mapping to
+exist before membership. A connection/host-segment-key association identifies a remote
+segment. Existing-only targets require a verified association or remote ID;
+create-if-absent targets carry a complete definition. Typed segment reads validate ID,
+alias, publication and empty filters. A shared segment-key lease coordinates package
+workers, and the verified remote ID is persisted before membership.
+
+Membership is read before the mutation and again after it. Definite write failures and
+uncertain outcomes are different durable states; uncertainty is not automatically
+replayed. Contact completion survives later failures. The flow never changes DNC or
+consent and does not imply campaign entry or email delivery. See
+`docs/decisions/006-subscription-delivery.md`.
+
 ## Incoming delivery
 
 The host passes an exact raw body and `Webhook-Signature` header to the opt-in inbox;

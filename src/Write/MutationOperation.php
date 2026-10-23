@@ -16,6 +16,7 @@ enum MutationOperation: string
     case RemoveContactFromSegment = 'remove_contact_from_segment';
     case BlockContactEmail = 'block_contact_email';
     case ReleaseContactEmailRestriction = 'release_contact_email_restriction';
+    case CreateStaticSegment = 'create_static_segment';
 
     public function safety(): OperationSafety
     {
