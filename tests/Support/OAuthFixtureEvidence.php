@@ -58,6 +58,12 @@ final class OAuthFixtureEvidence
         $this->persist();
     }
 
+    public function membershipCleanup(string $outcome): void
+    {
+        $this->evidence['membership_cleanup'] = $outcome;
+        $this->persist();
+    }
+
     public function path(): string
     {
         return $this->path;

@@ -179,6 +179,47 @@ and 205 tests / 995 assertions; four opt-in MariaDB tests were skipped. Both iso
 OAuth suites skipped with zero assertions and no network access without their own
 opt-ins. Remote CI was not run.
 
+## OAuth static segment membership acceptance — 2026-10-23
+
+Task 07F adds a focused `composer test:oauth-segment` probe inside the separately
+gated OAuth fixture suite. It requires the existing fixture mutation opt-in and exact
+disposable acknowledgement, and additionally requires
+`MAUTIC_LIVE_OAUTH_STATIC_SEGMENT_ID` before constructing OAuth configuration or sending
+any mutation. The configured local Mautic 7.2.1 segment passed the dedicated fixture
+preflight.
+
+Installed Mautic 7.2.1 source and functional tests show that `GET /api/segments/{id}`
+returns the definition under `list`, including its `filters` array. The test-only
+preflight therefore requires the exact configured ID, the exact dedicated name
+`lm-live-mautic721-static`, and an explicitly empty `filters` array. It rejects missing,
+inaccessible, malformed, differently named and dynamically filtered definitions;
+`isGlobal` is not treated as static-segment evidence. No production API was expanded.
+
+The live probe has a fixed 16-request operation budget plus bounded cleanup.
+It creates only a random owned contact after segment preflight, treats membership reads
+as ID sets, verifies add/repeated-add/remove/repeated-remove outcomes, compares DNC
+before and after, records a possible membership before sending add, and preserves the
+original failure through membership and exact-ownership contact cleanup.
+
+Focused offline preflight coverage passed 7 tests / 10 assertions. The focused suite
+without its mutation opt-in skipped 1 test / 0 assertions without networking. With the
+mutation gates enabled but no configured segment ID, it failed before OAuth setup or
+mutation with the explicit missing-prerequisite error. The full `composer check` passed:
+Larastan level 8 reported no errors and the default suite passed 212 tests / 1005
+assertions with 4 explicitly opt-in MariaDB tests skipped.
+
+The authorized live run against exact `https://mautic.test` then passed 1 test / 11
+assertions. The first execution exposed only an incorrect exact request-count assertion:
+the complete operation path used 15 of the permitted 16 requests. After correcting that
+test accounting, the rerun passed. Mautic accepted repeated add and repeated remove as
+successful commands, every read showed the exact expected membership ID set immediately,
+and the known DNC value remained unchanged. Both run-owned contacts were verified,
+deleted, and confirmed absent; cleanup evidence reports the membership already absent.
+No segment definition, DNC, consent or customer data changed. Manual setup and sanitized
+evidence are recorded in README and the compatibility report at
+`docs/compatibility/mautic-7.2.1-oauth-static-segment.md`. No run-owned contact or
+membership remains after Task 07F; the dedicated test segment remains unchanged.
+
 ## Reconciliation, diagnostics and live-server harness — 2026-10-19
 
 Task 07 adds bounded, resumable contact reconciliation without treating an incomplete or

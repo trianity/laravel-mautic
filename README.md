@@ -624,6 +624,28 @@ Configure `MAUTIC_LIVE_OAUTH_STATIC_SEGMENT_ID` only for a dedicated static test
 segment; otherwise that probe is explicitly skipped. Never select a business or
 dynamic segment for this suite.
 
+The focused Task 07F membership probe makes that segment mandatory and runs without
+the unrelated contact-lifecycle case:
+
+```bash
+composer test:oauth-segment
+```
+
+Prepare the segment manually in the local Mautic UI before setting the ignored ID:
+
+1. Open `https://mautic.test/s/segments/new` as the dedicated test operator.
+2. Set **Name** exactly to `lm-live-mautic721-static`.
+3. Set **Visible to other users** to **Yes** so the dedicated OAuth principal can
+   access it, and keep **Available in Preference Center** disabled.
+4. Do not add any filter. Save the published segment with an empty **Filters** list.
+5. Copy only its numeric ID into ignored `tests/.env` as
+   `MAUTIC_LIVE_OAUTH_STATIC_SEGMENT_ID=<id>`.
+
+The probe reads the configured definition before creating a contact and requires the
+exact ID, exact name and an explicitly empty API `filters` array. Visibility alone is
+not treated as evidence that a segment is static. Without the configured ID it fails
+before OAuth configuration or mutation.
+
 ## Normalized contact reads
 
 ```php
