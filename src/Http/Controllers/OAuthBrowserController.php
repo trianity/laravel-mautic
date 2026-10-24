@@ -12,6 +12,7 @@ use Illuminate\Http\Response;
 use Illuminate\Routing\Router;
 use Throwable;
 use Trianity\LaravelMautic\Contracts\OAuthBrowserAuthorizer;
+use Trianity\LaravelMautic\Exceptions\InvalidOAuthState;
 use Trianity\LaravelMautic\OAuth\OAuth2Service;
 use Trianity\LaravelMautic\OAuth\OAuthCallbackUrlResolver;
 
@@ -53,7 +54,8 @@ final readonly class OAuthBrowserController
     ): RedirectResponse|Response {
         $this->guard($request, $connection, $authorizer, $callbacks);
 
-        $context = $request->session()->pull($this->sessionKey($connection));
+        $sessionKey = $this->sessionKey($connection);
+        $context = $request->session()->get($sessionKey);
         if (! is_string($context) || $context === '') {
             return $this->result($config, $router, $urls, $connection, 'failed', 'session_missing', 400);
         }
@@ -70,9 +72,15 @@ final readonly class OAuthBrowserController
 
         try {
             $oauth->complete($connection, $state, $code, $context);
+        } catch (InvalidOAuthState) {
+            return $this->result($config, $router, $urls, $connection, 'failed', 'authorization_failed', 400);
         } catch (Throwable) {
+            $request->session()->forget($sessionKey);
+
             return $this->result($config, $router, $urls, $connection, 'failed', 'authorization_failed', 400);
         }
+
+        $request->session()->forget($sessionKey);
 
         return $this->result($config, $router, $urls, $connection, 'authorized', null, 200);
     }
@@ -117,7 +125,7 @@ final readonly class OAuthBrowserController
         $route = $config->get('mautic.oauth.routes.result_route');
 
         if (is_string($route) && $route !== '' && $router->has($route)) {
-            return redirect()->to($urls->route($route, [], false))->with('mautic_oauth', $payload);
+            return redirect()->away($urls->route($route, [], false))->with('mautic_oauth', $payload);
         }
 
         return response($status === 'authorized' ? 'OAuth authorization completed.' : 'OAuth authorization failed.', $httpStatus);

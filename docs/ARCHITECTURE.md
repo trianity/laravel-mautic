@@ -274,7 +274,9 @@ interactive access. Existing host-owned routes remain supported. The optional pa
 browser routes are disabled by default, require a connection allowlist, session/CSRF
 middleware and a host binding of `OAuthBrowserAuthorizer`; its default binding denies every
 request. They retain a random connection-scoped context only in the server-side session and
-accept no context or redirect target from callback input.
+accept no context or redirect target from callback input. A replaced authorization's
+mismatched state cannot remove the current session context; a successful or other terminal
+completion of the current flow clears it.
 
 `OAuthCallbackUrlResolver` is the single callback boundary used by authorization, code
 exchange and diagnostics. An explicit per-connection `redirect_uri` remains authoritative.
@@ -282,8 +284,9 @@ Only when package routes are enabled and the connection is allowlisted may it de
 callback from trusted `app.url`, the configured route prefix and connection. It never uses
 the request `Host` header. The browser controller owns presentation only through a trusted
 configured result route and fixed sanitized outcome codes; it does not duplicate token,
-state, locking or persistence behavior. Result redirects use relative named-route paths so
-an untrusted request host cannot become their origin.
+state, locking or persistence behavior. Result redirects emit the relative named-route path
+directly in `Location`, without passing it through request-origin URL generation, so an
+untrusted request host cannot become their origin.
 
 The default token repository encrypts access and refresh tokens with the host
 encrypter and stores one versioned record per connection. Callback exchange and refresh

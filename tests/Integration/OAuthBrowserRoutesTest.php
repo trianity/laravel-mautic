@@ -237,11 +237,12 @@ final class OAuthBrowserRoutesTest extends TestCase
     public function test_denial_malformed_callback_and_exchange_failure_are_sanitized(): void
     {
         $this->post('/integrations/mautic/oauth/main/authorize');
-        $this->withHeader('Host', 'attacker.example.test')
+        $this->withServerVariables(['HTTP_HOST' => 'attacker.example.test'])
             ->get('/integrations/mautic/oauth/main/callback?error=access_denied&error_description=secret&redirect=https://attacker.example.test')
             ->assertRedirect('/oauth-result')
             ->assertSessionHas('mautic_oauth.reason', 'provider_denied')
-            ->assertSessionMissing('error_description');
+            ->assertSessionMissing('error_description')
+            ->assertHeader('Location', '/oauth-result');
 
         $this->post('/integrations/mautic/oauth/main/authorize');
         $this->get('/integrations/mautic/oauth/main/callback?state=missing-code')
@@ -269,5 +270,9 @@ final class OAuthBrowserRoutesTest extends TestCase
         $this->get('/integrations/mautic/oauth/main/callback?state='.$firstQuery['state'].'&code=old')
             ->assertSessionHas('mautic_oauth.status', 'failed');
         self::assertSame([], $this->endpoint->codes);
+
+        $this->get('/integrations/mautic/oauth/main/callback?state='.$secondQuery['state'].'&code=current')
+            ->assertSessionHas('mautic_oauth.status', 'authorized');
+        self::assertSame(['current'], $this->endpoint->codes);
     }
 }

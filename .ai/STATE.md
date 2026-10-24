@@ -55,6 +55,24 @@ scope and the stronger possible future design.
 
 ## Verification
 
+## 1.1.0 pre-release OAuth corrections — 2026-10-24
+
+Task 11 makes configured result redirects genuinely origin-independent by emitting the
+relative named-route path directly in the `Location` header. Browser callbacks now inspect
+the current session context without removing it first: an older replaced state is rejected
+without preventing the newer authorization from completing, while successful and other
+terminal current completion attempts clear the context.
+
+The adoption documentation now supplies a numbered first-connection procedure from Mautic
+API enablement through client registration and successful host verification, plus a concrete
+authorizer binding, CSRF-protected named-route form, explicit callback-precedence warning and
+safe manual instructions for updating an already published configuration. The README now
+distinguishes the redirect-free core OAuth service from the opt-in browser controller.
+
+Focused OAuth infrastructure and browser-route coverage passed 13 tests / 55 assertions.
+Final `composer check` passed strict Composer validation, Pint, Larastan level 8 and 334
+tests / 1622 assertions with seven opt-in tests skipped. No MariaDB or live Mautic suite ran.
+
 ## 1.1.0 reusable Laravel OAuth infrastructure — 2026-10-24
 
 Task 10 prepares an opt-in package browser OAuth layer while preserving all 1.0 host-owned

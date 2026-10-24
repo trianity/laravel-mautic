@@ -152,10 +152,11 @@ $oauth->complete(
 State is random, stored only as a hash, bound to both the connection and an opaque
 host-supplied authorization context, expiring and atomically consumed once. Missing or
 mismatched context rejects the callback without consuming state or changing tokens.
-The package never reads `$_GET`/`$_SESSION`, emits a redirect or calls `exit`. Queue
-jobs and backend API calls therefore either obtain a valid token, perform one bounded
-refresh, wait for the shared database lock, or throw a typed OAuth exception; they
-never start an interactive flow.
+The core `OAuth2Service` never reads `$_GET`/`$_SESSION`, emits a redirect or calls
+`exit`. The optional browser controller returns normal Laravel redirect responses for
+the explicitly enabled start, callback and result flow. Queue jobs and backend API calls
+therefore either obtain a valid token, perform one bounded refresh, wait for the shared
+database lock, or throw a typed OAuth exception; they never start an interactive flow.
 
 ### Optional package browser routes (1.1)
 
@@ -176,6 +177,11 @@ Existing host-owned OAuth routes remain supported and keep their explicit
     ],
 ],
 ```
+
+When upgrading an application that already published `config/mautic.php`, publishing
+again with `--force` would overwrite host changes. Add the `oauth.routes` block above to
+the existing file manually, compare any other new defaults, and leave routes disabled
+until the host authorizer and middleware are ready.
 
 The endpoints are `POST /{prefix}/{connection}/authorize` and
 `GET /{prefix}/{connection}/callback`. The middleware stack must provide a server-side
@@ -203,7 +209,11 @@ php artisan mautic:oauth:callback-url main
 
 Register that exact URI in the Mautic OAuth client. Local and production environments
 normally need separate clients and exact callback registrations. See
-[the 1.1 host adoption guide](docs/oauth-host-adoption.md) before removing host code.
+[the 1.1 host adoption guide](docs/oauth-host-adoption.md) for the complete first-connection
+procedure, authorizer binding and CSRF-protected start-button example before removing host
+code. An existing explicit `redirect_uri` always overrides the derived package callback;
+the package callback includes the connection name, for example
+`/mautic/oauth/main/callback`.
 
 Access and refresh tokens are encrypted with the host `APP_KEY` and stored per named
 connection. Callback exchange and refresh use the same database lock. After acquiring

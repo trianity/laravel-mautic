@@ -13,6 +13,15 @@
   process-environment compatibility and custom credential-provider bindings.
 - A host adoption guide for migrating duplicated OAuth infrastructure without resetting
   tokens or moving host business authorization into the package.
+- A complete first-connection procedure with concrete authorizer binding, a CSRF-protected
+  start action and safe published-configuration upgrade notes.
+
+### Fixed
+
+- Result-route redirects now retain a relative `Location` header instead of rebuilding an
+  absolute URL from the request host.
+- A callback for a replaced authorization start no longer removes the newer browser
+  context, so the current authorization can still complete.
 
 ### Compatibility
 
