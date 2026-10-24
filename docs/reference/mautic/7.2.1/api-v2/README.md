@@ -1,9 +1,10 @@
 # Mautic 7.2.1 API v2 reference
 
-This directory contains a machine-readable snapshot of the API v2 contract exported
-by the installed local Mautic instance. It is an interoperability reference for this
-package, not proof that an operation is authorized, behaves as described at runtime,
-or is compatible with the package's existing API v1 adapter.
+This directory records the provenance and concise conclusions from an API v2 contract
+export of a local Mautic 7.2.1 installation. The large machine-readable snapshot is kept
+only as an optional ignored development reference under
+`.idea/references/mautic/7.2.1/api-v2/openapi.json`; it is not a runtime, installation or
+distribution dependency of this package.
 
 ## Provenance
 
@@ -21,10 +22,9 @@ or is compatible with the package's existing API v1 adapter.
 | Paths / operations / schemas | 68 / 196 / 475 |
 | SHA-256 | `f1a44c2f72b1764cbdb47712e3dde0b276a22afcd8475798955bca7e67a481b4` |
 
-The installed Mautic distribution at `/home/holbok/web/kasza-mautic` has no Git
-metadata. Its exact application checkout revision is therefore unavailable; the
-Composer package versions and source revisions above are the available reproducibility
-identifiers.
+The inspected Mautic distribution had no Git metadata. Its exact application checkout
+revision is therefore unavailable; the Composer package versions and source revisions
+above are the available reproducibility identifiers.
 
 ## Extraction
 
@@ -34,13 +34,15 @@ command was:
 
 ```console
 php bin/console api:openapi:export --spec-version=3 \
-  --output=/home/holbok/web/packages/laravel-mautic/docs/reference/mautic/7.2.1/api-v2/openapi.json \
+  --output=/absolute/path/to/laravel-mautic/.idea/references/mautic/7.2.1/api-v2/openapi.json \
   --no-interaction --no-ansi
 ```
 
-The command completed successfully and wrote `openapi.json`. Although the command asks
-the exporter for major version 3, this API Platform version emits OpenAPI 3.2.0. No HTTP
-credentials are part of the command or artifact.
+The original command completed successfully. Although the command asks the exporter for
+major version 3, this API Platform version emits OpenAPI 3.2.0. No HTTP credentials are
+part of the command or artifact. Regeneration is an explicit compatibility task: it boots
+the selected local Mautic installation and must not run as part of package installation or
+ordinary offline checks.
 
 The export boots the installed application and therefore depends on that installation's
 Composer packages, environment, database availability, enabled bundles and discovered
@@ -64,7 +66,7 @@ Relevant installed sources are:
 
 ## Validation and safety review
 
-`openapi.json` parsed as JSON and has the expected OpenAPI root structure. All 456
+The inspected snapshot parsed as JSON and had the expected OpenAPI root structure. All 456
 distinct `$ref` values are local document references, all resolve, and no external
 reference was found. The artifact is not HTML, a redirect, login response or
 authentication error.

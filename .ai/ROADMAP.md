@@ -11,6 +11,7 @@
 | 06 | Verified webhook inbox with idempotent processing and loop prevention | 04, 05 |
 | 07 | Reconciliation, diagnostics, opt-in real Mautic tests and migration guide | 03, 05, 06 |
 | 08 | Public API review and release readiness | 07 |
+| 09 | Focused 1.0.0 release cleanup from the readiness audit | 08 |
 
 The owner may reorder OAuth2 relative to writes. Existing form POST writes remain
 host-owned until their effects are inventoried. Task 00 rechecks the PHP 8.4/8.5 and

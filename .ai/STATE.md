@@ -39,9 +39,10 @@
 
 ## Not implemented
 
-Consent workflows and completed live-Mautic compatibility acceptance. The live harness
-exists, but no server version is considered verified until its explicitly enabled tests
-pass against a validated disposable target. No webhook route is automatically exposed.
+Generic consent workflows and blanket live-Mautic compatibility are not implemented.
+The retained acceptance evidence is scoped to the documented capabilities exercised
+against a validated disposable Mautic 7.2.1 target; it does not verify host business
+integration, campaign configuration or mail execution. No webhook route is automatically exposed.
 Remote deletion and generic multi-channel DNC operations are not exposed. No migration runs implicitly,
 no automatic database reset or model event exists, and no compatibility bridge for
 unreleased development schemas is provided. No release tag or Packagist publication
@@ -53,6 +54,21 @@ not promise ownership or an atomic revision check; Decision 005 records this acc
 scope and the stronger possible future design.
 
 ## Verification
+
+## 1.0.0 release cleanup — 2026-10-24
+
+Task 09 prepares the first-release candidate without tagging or publishing it. The raw
+Mautic 7.2.1 OpenAPI export moved, checksum unchanged, to the intentionally ignored local
+`.idea/references/mautic/7.2.1/api-v2/openapi.json`; tracked capability and provenance
+documentation remains sufficient without that optional development artifact. Git archive
+rules exclude AI material, source-only tests and test configurations while retaining the
+consumer documentation, runtime source, configuration and all canonical migrations.
+
+OAuth now has the exact `mautic-oauth-migrations` publication tag in addition to the
+unchanged six-migration aggregate and existing subsystem tags. Composer declares
+`ext-json`, and the README distinguishes minimal OAuth setup, optional subsystem
+dependencies and source-only live acceptance tooling. Detailed cleanup verification is
+recorded in `docs/audits/1.0.0-readiness.md`.
 
 ## Continuous-arrival live burst correction — 2026-10-23
 
@@ -165,8 +181,9 @@ require explicit target-specific opt-in.
 
 ## Next task
 
-Review the next roadmap milestone; do not begin it implicitly. Live evidence remains
-version- and capability-specific rather than a blanket compatibility claim.
+Review the release-candidate diff and exact remote CI matrix before any authorized tag or
+publication. Live evidence remains version- and capability-specific rather than a blanket
+compatibility claim.
 
 ## OAuth restriction-write acceptance — 2026-10-23
 
@@ -296,8 +313,9 @@ focused read/write/preflight selection passed 42 tests / 125 assertions, and
 
 ## Installed Mautic API v2 reference — 2026-10-19
 
-Task 07C captured the installed local Mautic 7.2.1 API v2 contract at
-`docs/reference/mautic/7.2.1/api-v2/openapi.json` using API Platform's official
+Task 07C captured the installed local Mautic 7.2.1 API v2 contract, now retained as the
+optional ignored local reference `.idea/references/mautic/7.2.1/api-v2/openapi.json`,
+using API Platform's official
 `api:openapi:export --spec-version=3` console command. The installed packages are
 `mautic/core-lib` 7.2.1 at Composer source revision
 `4a0fbebb76ac1bc84fb507227f21e103f7436d42` and `api-platform/core` 4.4.3 at
@@ -849,8 +867,9 @@ token responses are classified without body/secret leakage. True post-send mutat
 transport loss remains ambiguous. Instance-root normalization produces correct API and
 OAuth endpoints for root and subdirectory URLs with or without `/api`.
 
-The migration is explicitly publishable under `mautic-migrations` and never runs
-automatically. Storage contracts, table names, database connection and credential
+The migration is explicitly publishable under `mautic-oauth-migrations` and the
+aggregate `mautic-migrations` tag, and never runs automatically. Storage contracts,
+table names, database connection and credential
 provider are replaceable. Focused tests cover state context, replay/expiry/concurrency,
 lease expiry, callback/refresh races, uncertain persistence, endpoint classification,
 real-SDK contact reads/writes and unchanged Basic Auth behavior. The lock integration

@@ -5,12 +5,13 @@
 A model-independent Laravel integration built on the official `mautic/api-library`.
 MIT licensed; intended for publication as `trianity/laravel-mautic` on Packagist.
 
-**Status: development package, no stable release yet.** Basic Auth and opt-in OAuth2
+**Status: 1.0.0 release candidate; no release has been tagged or published yet.** Basic Auth and opt-in OAuth2
 connections, normalized contact reads, explicit contact writes, manual segment
 commands, explicit email-restriction commands, durable identity mappings, field ownership rules, transactional outgoing
 synchronization, a verified webhook inbox and raw upstream contexts are implemented.
-Bounded reconciliation and connection diagnostics are implemented. No real Mautic
-server compatibility is claimed until the corresponding opt-in live probes pass.
+Bounded reconciliation and connection diagnostics are implemented. Compatibility
+evidence is specific to the capabilities exercised against Mautic 7.2.1; it is not a
+blanket claim for every Mautic feature, version or host integration.
 
 ## Requirements
 
@@ -34,20 +35,21 @@ composer check
 
 A library intentionally does not commit `composer.lock`. Composer resolves stable
 compatible versions; a fresh default resolution prefers Laravel 13 and Pest 5.
-See [CONTRIBUTING.md](CONTRIBUTING.md) for Laravel 12 development.
+See [CONTRIBUTING.md on GitHub](https://github.com/trianity/laravel-mautic/blob/main/CONTRIBUTING.md)
+for Laravel 12 development.
 
-## Use in a host application during development
+## Install in a host application
 
-Until a release is published, add a Composer VCS repository for this GitHub URL to
-the host application's root `composer.json`, then run:
+After the 1.0.0 tag is published to Packagist, install the package with:
 
 ```bash
-composer require trianity/laravel-mautic:dev-main
+composer require trianity/laravel-mautic:^1.0
 php artisan vendor:publish --tag=mautic-config
 ```
 
-After publication, require a tested tagged version instead of `dev-main`.
-The service provider is auto-discovered. Configure the **host application's** `.env`:
+Before publication, source contributors can use the repository checkout described
+above; consumer applications should not depend on `dev-main`. The service provider is
+auto-discovered. Configure the **host application's** `.env`:
 
 ```dotenv
 MAUTIC_CONNECTION=main
@@ -61,6 +63,26 @@ MAUTIC_PASSWORD=replace-with-a-dedicated-secret
 `allow_http` is an explicit opt-in in `config/mautic.php` for local development.
 Connections are created lazily, so an unconfigured package can boot without a request.
 
+## Optional database migrations
+
+No package migration runs implicitly. Publish only the subsystem used by the host, then
+review and run the published migration with Laravel. Connection and table names remain
+configurable in `config/mautic.php`; companion subsystems must use the same configured
+database where the table below says so.
+
+| Feature | Publication tag | Required companion migrations | Tables or purpose |
+| --- | --- | --- | --- |
+| OAuth2 token lifecycle | `mautic-oauth-migrations` | None | Tokens, authorization states and refresh locks |
+| Contact identity | `mautic-identity-migrations` | None | Local-to-remote contact mappings |
+| Transactional outbox | `mautic-outbox-migrations` | Identity for processing | Commands, aggregate locks, audits and connection blocks |
+| Webhook inbox | `mautic-inbox-migrations` | Identity and a host projector for processing | Deliveries, events and contact locks |
+| Reconciliation | `mautic-reconciliation-migrations` | Identity for comparison and default repair | Checkpoints, observations, findings and audits |
+| Subscription delivery | `mautic-subscription-migrations` | Identity and outbox on the same database | Intents, segment associations, locks and audits |
+| Every optional subsystem | `mautic-migrations` | Deliberately publishes all rows above | All six canonical migrations, exactly once |
+
+The aggregate tag is a convenience for hosts deliberately installing every subsystem;
+it is not a prerequisite for OAuth2 alone.
+
 ## OAuth2 authorization and token lifecycle
 
 OAuth2 uses Mautic's authorization-code and refresh-token grants; this package does
@@ -68,14 +90,13 @@ not use or assume `client_credentials`. Publish and run the optional namespaced
 storage migration before enabling an OAuth2 connection:
 
 ```bash
-php artisan vendor:publish --tag=mautic-migrations
+php artisan vendor:publish --tag=mautic-oauth-migrations
 php artisan migrate
 ```
 
-The current development migration includes the state `context_hash` and token
-`generation` columns. If an older development stub was already published, replace it
-before running it. If it was already run, add those columns with a host migration;
-do not edit a migration that has run in a shared environment.
+The 1.0.0 canonical migration includes the state `context_hash` and token `generation`
+columns. The package does not publish compatibility migrations for pre-release schemas;
+hosts must never edit a migration that has already run in a shared environment.
 
 Set the connection's `auth` to `oauth2` and copy the commented `oauth` block from
 `config/mautic.php`. `client_secret_env` is the **name** of a runtime environment
@@ -185,10 +206,8 @@ leading/trailing whitespace are significant and stored unchanged. SHA-256 tuple 
 provide database-independent lookup and uniqueness, while every match is verified
 against the original values. The same connection hash is indexed before mapping
 inventory ordering and limiting, so case-insensitive database collations cannot mix
-names such as `main` and `Main`. The unreleased package publishes one canonical identity
-create migration. Disposable development installations that ran an earlier stub must
-recreate their package test schema deliberately; no compatibility migration or automatic
-host-database reset is provided.
+names such as `main` and `Main`. The package publishes one canonical identity create
+migration. No compatibility migration or automatic host-database reset is provided.
 The package includes an opt-in disposable MariaDB test using
 `MAUTIC_TEST_MARIADB_HOST`, `MAUTIC_TEST_MARIADB_DATABASE` (the name must contain
 `test`), and optional port/username/password variables. SQLite success alone is not
@@ -233,7 +252,7 @@ Resolved values distinguish `unchanged`, explicit `clear` and `set`; unchanged v
 are omitted from `outboundValues()` and `inboundValues()`. DNC, consent evidence,
 tags and segment membership are rejected from generic field rules and remain separate
 host workflows. The mapper never calls `Model::toArray()` and does not send changes.
-Task 05 owns durable delivery. The schema and concurrency decision is documented in
+Durable delivery is the explicit outbox workflow below. Its schema and concurrency decision is documented in
 [docs/decisions/001-contact-identity-storage.md](docs/decisions/001-contact-identity-storage.md).
 
 ## Transactional outgoing synchronization
@@ -315,10 +334,8 @@ Fresh installations use the complete canonical
 aggregate locks, operator audits and OAuth connection-block tables. This is the only
 published outbox migration; Laravel's migration ledger handles its normal execution.
 
-The package has not been released, so schemas created by earlier Task 05 development
-migrations are not upgradeable. A disposable development installation that ran those
-stubs must recreate its package outbox schema before applying the canonical migration.
-The package never drops or resets a host database automatically. Do not run
+Pre-release development schemas are not an upgrade contract. The package never drops or
+resets a host database automatically. Do not run
 `migrate:fresh` against a host application database or a production database copy;
 perform any scoped recreation only in a confirmed disposable development environment.
 
@@ -602,8 +619,11 @@ automatic retention deletion; hosts own the observation/finding/audit retention 
 See [decision 004](docs/decisions/004-reconciliation.md) for the crash model and
 [the host migration guide](docs/HOST_MIGRATION.md) before replacing existing Form posts.
 
-## Opt-in live Mautic proof
+## Source-only opt-in live Mautic proof
 
+This section applies only to a
+[GitHub source checkout](https://github.com/trianity/laravel-mautic); test code and its
+PHPUnit configurations are intentionally absent from the Composer distribution.
 `tests/Live` is excluded from `composer test` and `composer check`. The dedicated command
 also skips before networking unless `MAUTIC_LIVE_TESTS=1` is set. It accepts only a
 loopback Mautic URL, requires the exact disposable acknowledgement, verifies the expected
@@ -663,7 +683,7 @@ Add the following to ignored `tests/.env`; never commit the actual client secret
 ```dotenv
 MAUTIC_OAUTH_ACCEPTANCE_TESTS=1
 MAUTIC_LIVE_URL=https://mautic.test
-MAUTIC_LIVE_INSTALL_PATH=/home/holbok/web/kasza-mautic
+MAUTIC_LIVE_INSTALL_PATH=/absolute/path/to/local/mautic
 MAUTIC_LIVE_SERVER_VERSION=7.2.1
 MAUTIC_LIVE_CA_BUNDLE=/etc/ssl/certs/mautic.test.crt
 MAUTIC_LIVE_OAUTH_CLIENT_ID=replace-with-dedicated-client-id
@@ -980,7 +1000,7 @@ $segments = $connection->api('segments'); // raw upstream escape hatch
 **These are raw SDK contexts.** They retain upstream methods and response/error
 semantics, including write/delete methods. Raw calls provide no normalized exceptions,
 automatic retry, idempotency or automatic model synchronization.
-Do not call raw mutations in a critical checkout path. Read the planned boundary in
+Do not call raw mutations in a critical checkout path. Read the architectural boundary in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 Replace `Contracts\HttpClientFactory` or `Contracts\ConnectionFactory` through the
@@ -1001,16 +1021,10 @@ No guard, authentication model, table prefix or Mautic database schema is assume
 Mautic's historical lead terminology is accessed through its Contact REST API.
 There is no direct access to Mautic Contact/Lead database tables.
 
-The planned identity is `(connection, local contact reference, remote contact ID)`.
+The durable identity is `(connection, local contact reference, remote contact ID)`.
 Email is a discovery attribute, not a permanent identity or proof of ownership.
 Subscriber-facing disclosure of segment membership requires host-side authorization
 and verified identity. The package must never expose arbitrary email lookups publicly.
-
-## Continue with Codex
-
-Start with [AGENTS.md](AGENTS.md), then [.ai/README.md](.ai/README.md).
-[.ai/prompts/00-resume.md](.ai/prompts/00-resume.md) is the local handoff prompt.
-The ordered tasks describe TDD acceptance criteria and explicit implementation scope.
 
 ## License
 

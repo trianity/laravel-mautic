@@ -1,9 +1,19 @@
 * text=auto eol=lf
+/.editorconfig export-ignore
+/.gitattributes export-ignore
+/.gitignore export-ignore
+/.agents export-ignore
 /.ai export-ignore
+/.codex export-ignore
 /.github export-ignore
+/.idea export-ignore
 /tests export-ignore
 /AGENTS.md export-ignore
 /CONTRIBUTING.md export-ignore
+/docs/audits export-ignore
+/phpunit.live.xml export-ignore
+/phpunit.oauth-fixture.xml export-ignore
+/phpunit.oauth-live.xml export-ignore
 /phpunit.xml.dist export-ignore
 /phpstan.neon.dist export-ignore
 /pint.json export-ignore

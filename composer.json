@@ -13,6 +13,7 @@
     },
     "require": {
         "php": "^8.4",
+        "ext-json": "*",
         "guzzlehttp/guzzle": "^7.9",
         "illuminate/contracts": "^12.0 || ^13.0",
         "illuminate/database": "^12.0 || ^13.0",

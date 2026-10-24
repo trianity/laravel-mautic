@@ -317,9 +317,11 @@ final class MauticServiceProvider extends ServiceProvider
             $this->publishes([
                 __DIR__.'/../config/mautic.php' => config_path('mautic.php'),
             ], 'mautic-config');
-            $this->publishes([
+            $oauthMigration = [
                 __DIR__.'/../database/migrations/create_mautic_oauth_storage.php.stub' => database_path('migrations/2026_10_19_000000_create_mautic_oauth_storage.php'),
-            ], 'mautic-migrations');
+            ];
+            $this->publishes($oauthMigration, 'mautic-migrations');
+            $this->publishes($oauthMigration, 'mautic-oauth-migrations');
             $identityMigration = [
                 __DIR__.'/../database/migrations/create_mautic_contact_mappings.php.stub' => database_path('migrations/2026_10_19_010000_create_mautic_contact_mappings.php'),
             ];

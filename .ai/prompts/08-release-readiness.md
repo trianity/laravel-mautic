@@ -1,5 +1,9 @@
 # Prompt 08 — Public API and release readiness review
 
+Historical status: completed as the audit-only review in
+`docs/audits/1.0.0-readiness.md`. This prompt is not an active implementation handoff;
+the approved follow-up cleanup is Prompt 09.
+
 Read AGENTS.md, .ai/STATE.md, .ai/PROJECT.md and docs/ARCHITECTURE.md first.
 Inspect the installed SDK and current tests. Implement only this milestone using
 Pest TDD, explicit types and model-independent contracts. Preserve PHP 8.4+ and
