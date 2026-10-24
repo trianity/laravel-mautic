@@ -35,6 +35,7 @@ use Trianity\LaravelMautic\Reconciliation\ContactReconciler;
 use Trianity\LaravelMautic\Reconciliation\DatabaseMauticDiagnostics;
 use Trianity\LaravelMautic\Reconciliation\DatabaseReconciliationStore;
 use Trianity\LaravelMautic\Reconciliation\MappingRecoveryService;
+use Trianity\LaravelMautic\Reconciliation\OAuthCredentialHealth;
 use Trianity\LaravelMautic\Reconciliation\OAuthTokenHealth;
 use Trianity\LaravelMautic\Reconciliation\ReconciliationPage;
 use Trianity\LaravelMautic\Reconciliation\ReconciliationStatus;
@@ -446,9 +447,19 @@ it('reports only bounded operational diagnostics and token health', function () 
 
     expect($diagnostics->mappingStates)->toBe(['active' => 1])
         ->and($diagnostics->tokenHealth)->toBe(OAuthTokenHealth::Expired)
+        ->and($diagnostics->credentialHealth)->toBe(OAuthCredentialHealth::Unavailable)
         ->and($diagnostics->outboxStates)->toBe(['ambiguous' => 1])
         ->and($diagnostics->inboxStates)->toBe(['failed' => 1])
         ->and($encoded)->not->toContain('local_scope', 'local_key', 'payload', 'token_payload', 'secret');
+
+    putenv('MAUTIC_DIAGNOSTIC_SECRET=runtime-only-value');
+    config()->set('mautic.connections.main.oauth', [
+        'client_id' => 'client-id',
+        'client_secret_env' => 'MAUTIC_DIAGNOSTIC_SECRET',
+    ]);
+    expect(app(DatabaseMauticDiagnostics::class)->forConnection('main')->credentialHealth)
+        ->toBe(OAuthCredentialHealth::Available);
+    putenv('MAUTIC_DIAGNOSTIC_SECRET');
 });
 
 it('uses the real SDK boundary with an ID watermark and keyset ordering', function () {

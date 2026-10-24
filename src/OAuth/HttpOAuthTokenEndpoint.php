@@ -25,6 +25,7 @@ final readonly class HttpOAuthTokenEndpoint implements OAuthTokenEndpoint
         private HttpClientFactory $clients,
         private OAuthClientCredentialsProvider $credentials,
         private Clock $clock,
+        private ?OAuthCallbackUrlResolver $callbackUrls = null,
     ) {}
 
     public function exchange(string $connection, string $code): OAuthToken
@@ -36,7 +37,7 @@ final readonly class HttpOAuthTokenEndpoint implements OAuthTokenEndpoint
             'grant_type' => 'authorization_code',
             'client_id' => $credentials->clientId,
             'client_secret' => $credentials->clientSecret,
-            'redirect_uri' => $connectionConfig->oauthRedirectUri,
+            'redirect_uri' => ($this->callbackUrls ?? new OAuthCallbackUrlResolver($this->config))->resolve($connection),
             'code' => $code,
         ], null);
     }

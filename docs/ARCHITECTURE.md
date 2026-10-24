@@ -270,7 +270,20 @@ Callback state is random, hash-only at rest, connection-bound, expiring and atom
 single-use. It is also bound to an opaque authorization context supplied and retained
 by the host. Callback context must come from trusted server-side state; missing or
 mismatched context neither consumes state nor exchanges a code. The host must authorize
-its own routes and choose when a browser redirect is appropriate.
+interactive access. Existing host-owned routes remain supported. The optional package
+browser routes are disabled by default, require a connection allowlist, session/CSRF
+middleware and a host binding of `OAuthBrowserAuthorizer`; its default binding denies every
+request. They retain a random connection-scoped context only in the server-side session and
+accept no context or redirect target from callback input.
+
+`OAuthCallbackUrlResolver` is the single callback boundary used by authorization, code
+exchange and diagnostics. An explicit per-connection `redirect_uri` remains authoritative.
+Only when package routes are enabled and the connection is allowlisted may it derive the
+callback from trusted `app.url`, the configured route prefix and connection. It never uses
+the request `Host` header. The browser controller owns presentation only through a trusted
+configured result route and fixed sanitized outcome codes; it does not duplicate token,
+state, locking or persistence behavior. Result redirects use relative named-route paths so
+an untrusted request host cannot become their origin.
 
 The default token repository encrypts access and refresh tokens with the host
 encrypter and stores one versioned record per connection. Callback exchange and refresh

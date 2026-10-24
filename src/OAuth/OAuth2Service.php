@@ -27,6 +27,7 @@ final readonly class OAuth2Service
         private int $stateTtlSeconds = 600,
         private int $lockWaitSeconds = 5,
         private int $lockLeaseSeconds = 30,
+        private ?OAuthCallbackUrlResolver $callbackUrls = null,
     ) {
         if ($stateTtlSeconds <= 0 || $lockWaitSeconds <= 0 || $lockLeaseSeconds <= 0) {
             throw new InvalidConfiguration('OAuth timing settings are invalid.');
@@ -105,11 +106,11 @@ final readonly class OAuth2Service
         $oauth = $values['oauth'] ?? null;
         $url = $connectionConfig->url;
         $clientId = is_array($oauth) ? ($oauth['client_id'] ?? null) : null;
-        $redirectUri = is_array($oauth) ? ($oauth['redirect_uri'] ?? null) : null;
+        $redirectUri = ($this->callbackUrls ?? new OAuthCallbackUrlResolver($this->config))->resolve($connection);
         $scopes = is_array($oauth) ? ($oauth['scopes'] ?? []) : [];
 
         if (! is_string($clientId) || $clientId === ''
-            || ! is_string($redirectUri) || filter_var($redirectUri, FILTER_VALIDATE_URL) === false
+            || filter_var($redirectUri, FILTER_VALIDATE_URL) === false
             || ! is_array($scopes) || array_any($scopes, static fn (mixed $scope): bool => ! is_string($scope))) {
             throw new InvalidConfiguration('The OAuth2 connection configuration is incomplete.');
         }

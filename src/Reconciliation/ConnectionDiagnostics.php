@@ -20,6 +20,7 @@ final readonly class ConnectionDiagnostics
         public array $reconciliationFindings,
         public OAuthTokenHealth $tokenHealth,
         public ?ReconciliationCheckpoint $checkpoint,
+        public OAuthCredentialHealth $credentialHealth = OAuthCredentialHealth::NotApplicable,
     ) {}
 
     /** @return array<string, mixed> */
@@ -32,6 +33,7 @@ final readonly class ConnectionDiagnostics
             'inbox_states' => $this->inboxStates,
             'reconciliation_findings' => $this->reconciliationFindings,
             'token_health' => $this->tokenHealth->value,
+            'credential_health' => $this->credentialHealth->value,
             'checkpoint' => $this->checkpoint === null ? null : [
                 'scan_id' => $this->checkpoint->scanId,
                 'status' => $this->checkpoint->status->value,

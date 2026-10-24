@@ -5,7 +5,7 @@
 A model-independent Laravel integration built on the official `mautic/api-library`.
 MIT licensed; intended for publication as `trianity/laravel-mautic` on Packagist.
 
-**Status: 1.0.0.** Basic Auth and opt-in OAuth2
+**Status: 1.1.0 development.** Basic Auth and opt-in OAuth2
 connections, normalized contact reads, explicit contact writes, manual segment
 commands, explicit email-restriction commands, durable identity mappings, field ownership rules, transactional outgoing
 synchronization, a verified webhook inbox and raw upstream contexts are implemented.
@@ -40,7 +40,7 @@ for Laravel 12 development.
 
 ## Install in a host application
 
-After the 1.0.0 tag is published to Packagist, install the package with:
+Install the latest published stable release from Packagist with:
 
 ```bash
 composer require trianity/laravel-mautic:^1.0
@@ -100,10 +100,26 @@ hosts must never edit a migration that has already run in a shared environment.
 
 Set the connection's `auth` to `oauth2` and copy the commented `oauth` block from
 `config/mautic.php`. `client_secret_env` is the **name** of a runtime environment
-variable, not its value. The default credential provider reads the secret with
-`getenv()` when needed, so neither tokens nor the OAuth client secret enter the
-published configuration or Laravel's configuration cache. Applications using a
-secret manager may bind `Contracts\OAuthClientCredentialsProvider` instead.
+variable, not its value. The default credential provider first uses Laravel's runtime
+environment repository, then retains direct process-environment lookup as a compatibility
+fallback. It never parses or reloads `.env`, so neither tokens nor the OAuth client secret
+enter published or cached configuration. Applications using a secret manager may bind
+`Contracts\OAuthClientCredentialsProvider` instead; the package preserves that binding.
+
+The exact default environment mapping is:
+
+| Environment variable | Configuration value |
+| --- | --- |
+| `MAUTIC_CONNECTION` | `mautic.default` |
+| `MAUTIC_URL` | `mautic.connections.main.url` |
+| `MAUTIC_OAUTH_CLIENT_ID` | `mautic.connections.main.oauth.client_id` |
+| `MAUTIC_OAUTH_CLIENT_SECRET` | Runtime value named by `client_secret_env` |
+| `MAUTIC_OAUTH_REDIRECT_URI` | Optional explicit `redirect_uri`; omit it to derive the enabled package callback route |
+
+The package reads no other OAuth environment variable. In a configuration-cached
+deployment Laravel does not load `.env`; PHP-FPM, CLI, scheduler and queue-worker
+processes must receive `MAUTIC_OAUTH_CLIENT_SECRET` in their process environment. Restart
+long-running workers after changing it.
 
 The host owns the interactive route and authorization decision. Start authorization
 only from an explicitly authorized browser action, then redirect the browser to the
@@ -141,6 +157,54 @@ jobs and backend API calls therefore either obtain a valid token, perform one bo
 refresh, wait for the shared database lock, or throw a typed OAuth exception; they
 never start an interactive flow.
 
+### Optional package browser routes (1.1)
+
+Existing host-owned OAuth routes remain supported and keep their explicit
+`redirect_uri`. To opt into the package endpoints, publish the configuration and set:
+
+```php
+'oauth' => [
+    // Existing storage and timing settings...
+    'routes' => [
+        'enabled' => true,
+        'prefix' => 'kezelo/integrations/mautic/oauth',
+        'start_name' => 'mautic.oauth.start',
+        'callback_name' => 'mautic.oauth.callback',
+        'middleware' => ['web', 'auth:web', 'admin'],
+        'connections' => ['main'],
+        'result_route' => 'mautic.oauth.show',
+    ],
+],
+```
+
+The endpoints are `POST /{prefix}/{connection}/authorize` and
+`GET /{prefix}/{connection}/callback`. The middleware stack must provide a server-side
+session and CSRF protection for the POST. Middleware is not the package's authorization
+decision: the host must also bind `Contracts\OAuthBrowserAuthorizer`. The default
+implementation denies every request and assumes no User model, guard or role.
+
+The package stores a random 256-bit context under a connection-scoped session key. A new
+start replaces the earlier browser context for that connection; old server-side OAuth
+state expires normally and cannot be completed with the replacement context. Callback
+context and redirect targets are never accepted from request input. Sanitized results are
+flashed as `mautic_oauth.status`, `mautic_oauth.connection` and, on failure,
+`mautic_oauth.reason`, then redirected to the trusted configured `result_route`. Without a
+result route, the controller returns a minimal sanitized response. Result redirects use a
+relative named-route path and never a callback parameter or request host.
+
+When `redirect_uri` is explicitly configured, it always wins and existing host-owned
+routes are unchanged. Otherwise the package derives the callback from trusted `app.url`,
+the configured prefix and the allowlisted connection; it never uses the request `Host`
+header. Display the canonical value without exchanging tokens or making a remote request:
+
+```bash
+php artisan mautic:oauth:callback-url main
+```
+
+Register that exact URI in the Mautic OAuth client. Local and production environments
+normally need separate clients and exact callback registrations. See
+[the 1.1 host adoption guide](docs/oauth-host-adoption.md) before removing host code.
+
 Access and refresh tokens are encrypted with the host `APP_KEY` and stored per named
 connection. Callback exchange and refresh use the same database lock. After acquiring
 it, refresh re-reads the token, and both paths use a token generation compare-and-set
@@ -158,6 +222,11 @@ typed failures survive the SDK boundary before any contact request is sent; genu
 post-send mutation transport failures retain their ambiguous outcome classification.
 The token endpoint is called once per exchange/refresh attempt and is never
 automatically retried.
+
+`php artisan mautic:diagnose main` reports only bounded operational state, including
+`credential_health` (`available`, `unavailable` or `not_applicable`) and token health. It
+resolves credential availability without printing the client ID, secret variable name or
+secret value, and it never refreshes a token or starts authorization.
 
 If remote rotation succeeds but local persistence fails, or a stale lock owner loses
 the token-generation compare-and-set, `OAuthTokenPersistenceUncertain` is raised and

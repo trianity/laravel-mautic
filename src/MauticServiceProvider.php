@@ -5,9 +5,12 @@ declare(strict_types=1);
 namespace Trianity\LaravelMautic;
 
 use Illuminate\Contracts\Config\Repository;
+use Illuminate\Contracts\Foundation\CachesRoutes;
 use Illuminate\Contracts\Queue\Queue;
+use Illuminate\Routing\Router;
 use Illuminate\Support\ServiceProvider;
 use Trianity\LaravelMautic\Console\MauticDiagnosticsCommand;
+use Trianity\LaravelMautic\Console\OAuthCallbackUrlCommand;
 use Trianity\LaravelMautic\Console\ReconcileContactsCommand;
 use Trianity\LaravelMautic\Console\ReconcileMappingsCommand;
 use Trianity\LaravelMautic\Contracts\AuthenticationFactory;
@@ -18,6 +21,7 @@ use Trianity\LaravelMautic\Contracts\ContactReaderProvider;
 use Trianity\LaravelMautic\Contracts\ContactSyncTransport;
 use Trianity\LaravelMautic\Contracts\HttpClientFactory;
 use Trianity\LaravelMautic\Contracts\InboundContactProjector;
+use Trianity\LaravelMautic\Contracts\OAuthBrowserAuthorizer;
 use Trianity\LaravelMautic\Contracts\OAuthClientCredentialsProvider;
 use Trianity\LaravelMautic\Contracts\OAuthRefreshLock;
 use Trianity\LaravelMautic\Contracts\OAuthStateRepository;
@@ -27,6 +31,7 @@ use Trianity\LaravelMautic\Contracts\ReconciliationSource;
 use Trianity\LaravelMautic\Contracts\SubscriptionTransport;
 use Trianity\LaravelMautic\Contracts\WebhookSecretProvider;
 use Trianity\LaravelMautic\Exceptions\InvalidConfiguration;
+use Trianity\LaravelMautic\Http\Controllers\OAuthBrowserController;
 use Trianity\LaravelMautic\Http\GuzzleHttpClientFactory;
 use Trianity\LaravelMautic\Identity\DatabaseContactMappingRepository;
 use Trianity\LaravelMautic\Inbox\DatabaseWebhookInboxStore;
@@ -39,9 +44,11 @@ use Trianity\LaravelMautic\Inbox\WebhookInboxProcessor;
 use Trianity\LaravelMautic\OAuth\DatabaseOAuthStateRepository;
 use Trianity\LaravelMautic\OAuth\DatabaseOAuthTokenRepository;
 use Trianity\LaravelMautic\OAuth\DatabaseRefreshLock;
+use Trianity\LaravelMautic\OAuth\DenyOAuthBrowserAuthorizer;
 use Trianity\LaravelMautic\OAuth\EnvironmentOAuthClientCredentialsProvider;
 use Trianity\LaravelMautic\OAuth\HttpOAuthTokenEndpoint;
 use Trianity\LaravelMautic\OAuth\OAuth2Service;
+use Trianity\LaravelMautic\OAuth\OAuthCallbackUrlResolver;
 use Trianity\LaravelMautic\OAuth\OAuthTokenManager;
 use Trianity\LaravelMautic\OAuth\SystemClock;
 use Trianity\LaravelMautic\Outbox\ContactOutbox;
@@ -91,6 +98,7 @@ final class MauticServiceProvider extends ServiceProvider
         $this->app->bindIf(WebhookSecretProvider::class, EnvironmentWebhookSecretProvider::class);
         $this->app->bindIf(Clock::class, SystemClock::class);
         $this->app->bindIf(OAuthClientCredentialsProvider::class, EnvironmentOAuthClientCredentialsProvider::class);
+        $this->app->bindIf(OAuthBrowserAuthorizer::class, DenyOAuthBrowserAuthorizer::class);
         $this->app->bindIf(OAuthTokenEndpoint::class, HttpOAuthTokenEndpoint::class);
         $this->app->bindIf(AuthenticationFactory::class, ApiLibraryAuthenticationFactory::class);
         $this->app->bindIf(ContactSyncTransport::class, ManagerContactSyncTransport::class);
@@ -115,6 +123,7 @@ final class MauticServiceProvider extends ServiceProvider
 
     private function registerOAuth(): void
     {
+        $this->app->singleton(OAuthCallbackUrlResolver::class);
         $this->app->singletonIf(OAuthTokenRepository::class, function ($app): OAuthTokenRepository {
             return new DatabaseOAuthTokenRepository(
                 $app['db'],
@@ -161,6 +170,7 @@ final class MauticServiceProvider extends ServiceProvider
                 (int) $app['config']->get('mautic.oauth.state_ttl_seconds', 600),
                 (int) $app['config']->get('mautic.oauth.lock_wait_seconds', 5),
                 (int) $app['config']->get('mautic.oauth.lock_lease_seconds', 30),
+                $app->make(OAuthCallbackUrlResolver::class),
             );
         });
     }
@@ -353,6 +363,8 @@ final class MauticServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        $this->registerOAuthBrowserRoutes();
+
         if ($this->app->runningInConsole()) {
             $this->publishes([
                 __DIR__.'/../config/mautic.php' => config_path('mautic.php'),
@@ -391,8 +403,38 @@ final class MauticServiceProvider extends ServiceProvider
                 ReconcileContactsCommand::class,
                 ReconcileMappingsCommand::class,
                 MauticDiagnosticsCommand::class,
+                OAuthCallbackUrlCommand::class,
             ]);
         }
+    }
+
+    private function registerOAuthBrowserRoutes(): void
+    {
+        $config = $this->app->make(Repository::class);
+        if ($config->get('mautic.oauth.routes.enabled', false) !== true) {
+            return;
+        }
+        if ($this->app instanceof CachesRoutes && $this->app->routesAreCached()) {
+            return;
+        }
+
+        $middleware = $config->get('mautic.oauth.routes.middleware', ['web']);
+        $startName = $config->get('mautic.oauth.routes.start_name', 'mautic.oauth.start');
+        $callbackName = $config->get('mautic.oauth.routes.callback_name', 'mautic.oauth.callback');
+        if (! is_array($middleware) || $middleware === []
+            || ! array_all($middleware, static fn (mixed $value): bool => is_string($value) && $value !== '')
+            || ! is_string($startName) || $startName === ''
+            || ! is_string($callbackName) || $callbackName === ''
+            || $startName === $callbackName) {
+            throw new InvalidConfiguration('The package OAuth route configuration is invalid.');
+        }
+
+        $prefix = $this->app->make(OAuthCallbackUrlResolver::class)->routePrefix();
+        $router = $this->app->make(Router::class);
+        $router->middleware($middleware)->prefix($prefix)->group(function (Router $router) use ($startName, $callbackName): void {
+            $router->post('{connection}/authorize', [OAuthBrowserController::class, 'start'])->name($startName);
+            $router->get('{connection}/callback', [OAuthBrowserController::class, 'callback'])->name($callbackName);
+        });
     }
 
     private function databaseConnection(): ?string

@@ -45,8 +45,8 @@ against a validated disposable Mautic 7.2.1 target; it does not verify host busi
 integration, campaign configuration or mail execution. No webhook route is automatically exposed.
 Remote deletion and generic multi-channel DNC operations are not exposed. No migration runs implicitly,
 no automatic database reset or model event exists, and no compatibility bridge for
-unreleased development schemas is provided. No release tag or Packagist publication
-exists.
+unreleased development schemas is provided. Version 1.0.0 is published; no 1.1 tag or
+Packagist publication exists.
 
 Independent host-owned restrictions, durable restriction-command delivery and
 conditional release remain deferred. The implemented stock endpoint deliberately does
@@ -54,6 +54,33 @@ not promise ownership or an atomic revision check; Decision 005 records this acc
 scope and the stronger possible future design.
 
 ## Verification
+
+## 1.1.0 reusable Laravel OAuth infrastructure — 2026-10-24
+
+Task 10 prepares an opt-in package browser OAuth layer while preserving all 1.0 host-owned
+routes. Runtime secrets resolve first through Laravel's environment repository and then the
+process environment; custom provider bindings remain authoritative. Package routes are
+disabled by default and, when enabled, require host middleware, a server-side connection
+allowlist and a host `OAuthBrowserAuthorizer` binding whose default denies access.
+
+`OAuthCallbackUrlResolver` supplies the same explicit-or-derived URI to authorization, code
+exchange and `mautic:oauth:callback-url`. Derivation uses configured `app.url`, including its
+base path, never a request Host header. Browser state retains the existing connection-bound,
+expiring, single-use database state plus a random connection-scoped session context. The
+controller returns only fixed sanitized outcomes and delegates all token work to
+`OAuth2Service`. No migration or persisted representation changed.
+
+Focused OAuth infrastructure coverage passed 13 tests / 51 assertions. Final
+`composer check` passed strict Composer validation, Pint, Larastan level 8 and 334 tests /
+1613 assertions with seven opt-in tests skipped. `git diff --check` passed.
+
+A prospective Composer archive built from an isolated temporary Git snapshot contains the
+new controller, authorizer contract/default, callback resolver, command, credential-health
+enum, published configuration and adoption documentation. Existing export exclusions still
+remove tests, AI/IDE material, audit reports and development-only tool configuration. The
+temporary Git process emitted non-fatal stream-fd warnings in the restricted sandbox; the
+archive completed and every expected inclusion/exclusion check passed. No MariaDB or live
+Mautic suite ran, and no host file was changed.
 
 ## 1.0.0 provider registration refactor — 2026-10-24
 
@@ -216,10 +243,9 @@ require explicit target-specific opt-in.
 
 ## Next task
 
-Review the release-candidate diff and exact remote CI matrix before any authorized tag or
-publication. Candidate A-02 and the larger deferred refactors are not part of the 1.0.0
-pre-release scope. Live evidence remains version- and capability-specific rather than a
-blanket compatibility claim.
+Review the 1.1 diff and remote PHP/Laravel CI matrix before any authorized commit, tag or
+publication. Host adoption must use a released package followed by host acceptance; this
+package task does not modify the host.
 
 ## OAuth restriction-write acceptance — 2026-10-23
 

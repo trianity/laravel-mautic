@@ -15,6 +15,15 @@ return [
         'lock_wait_seconds' => 5,
         'lock_lease_seconds' => 30,
         'poll_milliseconds' => 100,
+        'routes' => [
+            'enabled' => false,
+            'prefix' => 'mautic/oauth',
+            'start_name' => 'mautic.oauth.start',
+            'callback_name' => 'mautic.oauth.callback',
+            'middleware' => ['web'],
+            'connections' => [],
+            'result_route' => null,
+        ],
     ],
 
     'identity' => [
@@ -87,7 +96,7 @@ return [
             // 'oauth' => [
             //     'client_id' => env('MAUTIC_OAUTH_CLIENT_ID', ''),
             //     'client_secret_env' => 'MAUTIC_OAUTH_CLIENT_SECRET',
-            //     'redirect_uri' => env('MAUTIC_OAUTH_REDIRECT_URI', ''),
+            //     'redirect_uri' => env('MAUTIC_OAUTH_REDIRECT_URI'),
             //     'scopes' => [],
             // ],
             // Opt-in webhook ingress (the secret value remains outside config cache):

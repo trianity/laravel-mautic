@@ -63,12 +63,13 @@ final readonly class ConnectionConfig
             $oauth = $values['oauth'] ?? null;
             $clientId = is_array($oauth) ? ($oauth['client_id'] ?? null) : null;
             $secretEnvironment = is_array($oauth) ? ($oauth['client_secret_env'] ?? null) : null;
-            $oauthRedirectUri = is_array($oauth) ? ($oauth['redirect_uri'] ?? null) : null;
+            $oauthRedirectUri = is_array($oauth) ? ($oauth['redirect_uri'] ?? '') : null;
 
             if (! is_string($clientId) || trim($clientId) === ''
                 || ! is_string($secretEnvironment) || trim($secretEnvironment) === ''
-                || ! is_string($oauthRedirectUri) || filter_var($oauthRedirectUri, FILTER_VALIDATE_URL) === false) {
-                throw new InvalidConfiguration('Mautic OAuth2 requires a client ID, secret environment variable and redirect URI.');
+                || ! is_string($oauthRedirectUri)
+                || ($oauthRedirectUri !== '' && filter_var($oauthRedirectUri, FILTER_VALIDATE_URL) === false)) {
+                throw new InvalidConfiguration('Mautic OAuth2 requires a client ID, secret environment variable and a valid optional redirect URI.');
             }
         }
 

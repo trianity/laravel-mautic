@@ -9,7 +9,9 @@ use Illuminate\Database\Connection;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Database\ConnectionResolverInterface;
 use Illuminate\Database\Query\Builder;
+use Throwable;
 use Trianity\LaravelMautic\Contracts\Clock;
+use Trianity\LaravelMautic\Contracts\OAuthClientCredentialsProvider;
 use Trianity\LaravelMautic\Identity\ContactIdentityHasher;
 
 final readonly class DatabaseMauticDiagnostics
@@ -19,6 +21,7 @@ final readonly class DatabaseMauticDiagnostics
         private Repository $config,
         private Clock $clock,
         private DatabaseReconciliationStore $reconciliation,
+        private ?OAuthClientCredentialsProvider $credentials = null,
     ) {}
 
     public function forConnection(string $connection): ConnectionDiagnostics
@@ -31,7 +34,27 @@ final readonly class DatabaseMauticDiagnostics
             $this->reconciliationFindings($connection),
             $this->tokenHealth($connection),
             $this->checkpoint($connection),
+            $this->credentialHealth($connection),
         );
+    }
+
+    private function credentialHealth(string $connection): OAuthCredentialHealth
+    {
+        $values = $this->config->get('mautic.connections.'.$connection);
+        if (! is_array($values) || ($values['auth'] ?? 'basic') !== 'oauth2') {
+            return OAuthCredentialHealth::NotApplicable;
+        }
+        if ($this->credentials === null) {
+            return OAuthCredentialHealth::Unavailable;
+        }
+
+        try {
+            $this->credentials->forConnection($connection);
+
+            return OAuthCredentialHealth::Available;
+        } catch (Throwable) {
+            return OAuthCredentialHealth::Unavailable;
+        }
     }
 
     /** @return array<string, int> */

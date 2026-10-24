@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.1.0 - Unreleased
+
+### Added
+
+- Optional, disabled-by-default browser OAuth start and callback routes with host middleware,
+  deny-by-default host authorization, connection allowlisting, session-held random contexts
+  and sanitized result handling.
+- One canonical callback URL resolver shared by authorization, token exchange and the new
+  read-only `mautic:oauth:callback-url` diagnostic command.
+- Laravel runtime environment repository support for OAuth client secrets while retaining
+  process-environment compatibility and custom credential-provider bindings.
+- A host adoption guide for migrating duplicated OAuth infrastructure without resetting
+  tokens or moving host business authorization into the package.
+
+### Compatibility
+
+- Existing explicit `redirect_uri` values and host-owned OAuth routes remain authoritative.
+- Upgrades register no browser routes unless explicitly enabled; migrations and persisted
+  OAuth/token formats are unchanged.
+
 ## 1.0.0 - 2026-10-24
 
 ### Added
