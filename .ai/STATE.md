@@ -55,6 +55,26 @@ scope and the stronger possible future design.
 
 ## Verification
 
+## 1.0.0 provider registration refactor — 2026-10-24
+
+Task 10 candidate A-01 is complete. `MauticServiceProvider::register()` delegates in its
+original order to private default-contract, identity, OAuth, outbox, subscription, inbox,
+reconciliation and manager registration methods. Binding statements, `bindIf` versus
+`singletonIf` versus `singleton` choices, closures, singleton lifetimes, lazy resolution,
+configuration reads and boot behavior are unchanged. New characterization tests prove
+that pre-registered host overrides and their chosen singleton/transient lifetimes survive
+package registration, and that representative defaults remain lazy with their declared
+lifetimes. Candidate A-02, subscription row hydration extraction, is deferred.
+
+Focused provider and subsystem verification passed 111 tests / 788 assertions. A clean
+prospective archive installed without development dependencies in a disposable Laravel
+13.38.0 consumer; provider registration/boot, lazy binding lifetimes and the Composer
+discovery declaration passed. The sandbox printed three non-fatal stream-fd warnings
+during consumer boot, but all assertions ran and the process exited zero. Final
+`composer check` passed Composer validation, Pint, Larastan level 8 and 321 tests / 1565
+assertions with seven opt-in tests skipped. `git diff --check` passed. No MariaDB or live
+Mautic suite ran.
+
 ## 1.0.0 production-source refactor review — 2026-10-24
 
 Task 10 reviewed all 190 production PHP files at
@@ -196,12 +216,10 @@ require explicit target-specific opt-in.
 
 ## Next task
 
-If structural cleanup is desired before release, implement Task 10 candidate A-01 alone:
-first characterize preservation of host `bindIf`/`singletonIf` overrides, then extract the
-existing service-provider registrations into private subsystem methods without changing
-their order, binding primitive or lazy resolution. Otherwise review the release-candidate
-diff and exact remote CI matrix before any authorized tag or publication. Live evidence
-remains version- and capability-specific rather than a blanket compatibility claim.
+Review the release-candidate diff and exact remote CI matrix before any authorized tag or
+publication. Candidate A-02 and the larger deferred refactors are not part of the 1.0.0
+pre-release scope. Live evidence remains version- and capability-specific rather than a
+blanket compatibility claim.
 
 ## OAuth restriction-write acceptance — 2026-10-23
 

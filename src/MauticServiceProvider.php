@@ -75,6 +75,18 @@ final class MauticServiceProvider extends ServiceProvider
     {
         $this->mergeConfigFrom(__DIR__.'/../config/mautic.php', 'mautic');
 
+        $this->registerDefaultContracts();
+        $this->registerIdentity();
+        $this->registerOAuth();
+        $this->registerOutbox();
+        $this->registerSubscription();
+        $this->registerInbox();
+        $this->registerReconciliation();
+        $this->registerManager();
+    }
+
+    private function registerDefaultContracts(): void
+    {
         $this->app->bindIf(HttpClientFactory::class, GuzzleHttpClientFactory::class);
         $this->app->bindIf(WebhookSecretProvider::class, EnvironmentWebhookSecretProvider::class);
         $this->app->bindIf(Clock::class, SystemClock::class);
@@ -85,6 +97,10 @@ final class MauticServiceProvider extends ServiceProvider
         $this->app->bindIf(ContactReaderProvider::class, ManagerContactReaderProvider::class);
         $this->app->bindIf(ReconciliationSource::class, ManagerReconciliationSource::class);
         $this->app->bindIf(SubscriptionTransport::class, ManagerSubscriptionTransport::class);
+    }
+
+    private function registerIdentity(): void
+    {
         $this->app->singletonIf(ContactMappingRepository::class, function ($app): ContactMappingRepository {
             $connection = $app['config']->get('mautic.identity.database_connection');
             $table = $app['config']->get('mautic.identity.mappings_table', 'mautic_contact_mappings');
@@ -95,6 +111,10 @@ final class MauticServiceProvider extends ServiceProvider
                 is_string($table) && $table !== '' ? $table : 'mautic_contact_mappings',
             );
         });
+    }
+
+    private function registerOAuth(): void
+    {
         $this->app->singletonIf(OAuthTokenRepository::class, function ($app): OAuthTokenRepository {
             return new DatabaseOAuthTokenRepository(
                 $app['db'],
@@ -143,6 +163,10 @@ final class MauticServiceProvider extends ServiceProvider
                 (int) $app['config']->get('mautic.oauth.lock_lease_seconds', 30),
             );
         });
+    }
+
+    private function registerOutbox(): void
+    {
         $this->app->singleton(DatabaseOutboxStore::class, function ($app): DatabaseOutboxStore {
             $connection = $app['config']->get('mautic.outbox.database_connection');
 
@@ -183,6 +207,10 @@ final class MauticServiceProvider extends ServiceProvider
             );
         });
         $this->app->singleton(OutboxOperator::class);
+    }
+
+    private function registerSubscription(): void
+    {
         $this->app->singleton(DatabaseSubscriptionStore::class, function ($app): DatabaseSubscriptionStore {
             $connection = $this->subscriptionDatabaseConnection();
             if ($connection !== $this->identityDatabaseConnection()
@@ -224,6 +252,10 @@ final class MauticServiceProvider extends ServiceProvider
                 (int) $app['config']->get('mautic.subscription.maximum_delay_seconds', 300),
             );
         });
+    }
+
+    private function registerInbox(): void
+    {
         $this->app->singleton(DatabaseWebhookInboxStore::class, function ($app): DatabaseWebhookInboxStore {
             $connection = $app['config']->get('mautic.inbox.database_connection');
 
@@ -257,6 +289,10 @@ final class MauticServiceProvider extends ServiceProvider
                 (int) $app['config']->get('mautic.inbox.lease_seconds', 30),
             );
         });
+    }
+
+    private function registerReconciliation(): void
+    {
         $this->app->singleton(DatabaseReconciliationStore::class, function ($app): DatabaseReconciliationStore {
             return new DatabaseReconciliationStore(
                 $app['db'],
@@ -307,6 +343,10 @@ final class MauticServiceProvider extends ServiceProvider
             );
         });
         $this->app->singleton(DatabaseMauticDiagnostics::class);
+    }
+
+    private function registerManager(): void
+    {
         $this->app->bindIf(ConnectionFactory::class, ApiLibraryConnectionFactory::class);
         $this->app->singleton(MauticManager::class);
     }
