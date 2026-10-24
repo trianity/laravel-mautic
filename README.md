@@ -3,9 +3,9 @@
 [![CI](https://github.com/trianity/laravel-mautic/actions/workflows/ci.yml/badge.svg)](https://github.com/trianity/laravel-mautic/actions/workflows/ci.yml)
 
 A model-independent Laravel integration built on the official `mautic/api-library`.
-MIT licensed; intended for publication as `trianity/laravel-mautic` on Packagist.
+MIT licensed; published as `trianity/laravel-mautic` on Packagist.
 
-**Status: 1.1.0 development.** Basic Auth and opt-in OAuth2
+**Status: 1.1.0.** Basic Auth and opt-in OAuth2
 connections, normalized contact reads, explicit contact writes, manual segment
 commands, explicit email-restriction commands, durable identity mappings, field ownership rules, transactional outgoing
 synchronization, a verified webhook inbox and raw upstream contexts are implemented.
@@ -43,12 +43,12 @@ for Laravel 12 development.
 Install the latest published stable release from Packagist with:
 
 ```bash
-composer require trianity/laravel-mautic:^1.0
+composer require trianity/laravel-mautic:^1.1
 php artisan vendor:publish --tag=mautic-config
 ```
 
-Before publication, source contributors can use the repository checkout described
-above; consumer applications should not depend on `dev-main`. The service provider is
+Source contributors can use the repository checkout described above; consumer applications
+should install a tagged release instead of depending on `dev-main`. The service provider is
 auto-discovered. Configure the **host application's** `.env`:
 
 ```dotenv

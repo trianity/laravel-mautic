@@ -45,8 +45,8 @@ against a validated disposable Mautic 7.2.1 target; it does not verify host busi
 integration, campaign configuration or mail execution. No webhook route is automatically exposed.
 Remote deletion and generic multi-channel DNC operations are not exposed. No migration runs implicitly,
 no automatic database reset or model event exists, and no compatibility bridge for
-unreleased development schemas is provided. Version 1.0.0 is published; no 1.1 tag or
-Packagist publication exists.
+unreleased development schemas is provided. Version 1.0.0 is published, and the 1.1.0
+release metadata is finalized for the owner-authorized tag and Packagist publication.
 
 Independent host-owned restrictions, durable restriction-command delivery and
 conditional release remain deferred. The implemented stock endpoint deliberately does
@@ -54,6 +54,15 @@ not promise ownership or an atomic revision check; Decision 005 records this acc
 scope and the stronger possible future design.
 
 ## Verification
+
+## 1.1.0 release metadata — 2026-10-24
+
+The README identifies 1.1.0 as the current release and installs the compatible `^1.1`
+line from Packagist. The changelog is dated for the release. Source-development guidance
+continues to reject consumer dependencies on `dev-main`. Historical audit and verification
+entries remain unchanged because they describe their exact earlier snapshots. Strict
+Composer validation and `git diff --check` passed; no runtime code changed, so the test
+suite was not rerun for this metadata-only update.
 
 ## 1.1.0 pre-release OAuth corrections — 2026-10-24
 
@@ -261,9 +270,10 @@ require explicit target-specific opt-in.
 
 ## Next task
 
-Review the 1.1 diff and remote PHP/Laravel CI matrix before any authorized commit, tag or
-publication. Host adoption must use a released package followed by host acceptance; this
-package task does not modify the host.
+Release metadata is finalized. The remaining owner-authorized actions are creating the
+`v1.1.0` tag and GitHub release and confirming Packagist publication. Host adoption must
+use that released package followed by host acceptance; this package task does not modify
+the host.
 
 ## OAuth restriction-write acceptance — 2026-10-23
 
