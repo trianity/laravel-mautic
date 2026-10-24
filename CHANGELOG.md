@@ -1,9 +1,6 @@
 # Changelog
 
-## 1.0.0 - pending release
-
-This entry describes the reviewed first-release candidate. It does not indicate that a
-Git tag, GitHub release or Packagist version has been published.
+## 1.0.0 - 2026-10-24
 
 ### Added
 

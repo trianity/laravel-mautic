@@ -5,7 +5,7 @@
 A model-independent Laravel integration built on the official `mautic/api-library`.
 MIT licensed; intended for publication as `trianity/laravel-mautic` on Packagist.
 
-**Status: 1.0.0 release candidate; no release has been tagged or published yet.** Basic Auth and opt-in OAuth2
+**Status: 1.0.0.** Basic Auth and opt-in OAuth2
 connections, normalized contact reads, explicit contact writes, manual segment
 commands, explicit email-restriction commands, durable identity mappings, field ownership rules, transactional outgoing
 synchronization, a verified webhook inbox and raw upstream contexts are implemented.
