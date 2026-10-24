@@ -55,6 +55,21 @@ scope and the stronger possible future design.
 
 ## Verification
 
+## 1.0.0 production-source refactor review — 2026-10-24
+
+Task 10 reviewed all 190 production PHP files at
+`99d74bb95713b9db08c9605be588d15bf603e1a9` without changing runtime code, tests,
+configuration, migrations or public APIs. The ranked report at
+`docs/audits/1.0.0-src-refactor.md` recommends only two bounded pre-release candidates:
+private subsystem registration methods in `MauticServiceProvider`, followed optionally by
+a private `DatabaseSubscriptionStore` row mapper after adding corruption characterization.
+OAuth settings consolidation, persistence-store decomposition and subscription phase
+collaborators are deferred. Independent durable state machines, operation-specific retry
+and ambiguity handling, response distinctions and conditional SQL remain intentional.
+No correctness defect was identified. `composer check` passed Composer validation, Pint,
+Larastan level 8 and 319 tests / 1552 assertions with seven opt-in tests skipped;
+`git diff --check` passed. No MariaDB or live Mautic suite ran.
+
 ## 1.0.0 release cleanup — 2026-10-24
 
 Task 09 prepares the first-release candidate without tagging or publishing it. The raw
@@ -181,9 +196,12 @@ require explicit target-specific opt-in.
 
 ## Next task
 
-Review the release-candidate diff and exact remote CI matrix before any authorized tag or
-publication. Live evidence remains version- and capability-specific rather than a blanket
-compatibility claim.
+If structural cleanup is desired before release, implement Task 10 candidate A-01 alone:
+first characterize preservation of host `bindIf`/`singletonIf` overrides, then extract the
+existing service-provider registrations into private subsystem methods without changing
+their order, binding primitive or lazy resolution. Otherwise review the release-candidate
+diff and exact remote CI matrix before any authorized tag or publication. Live evidence
+remains version- and capability-specific rather than a blanket compatibility claim.
 
 ## OAuth restriction-write acceptance — 2026-10-23
 
