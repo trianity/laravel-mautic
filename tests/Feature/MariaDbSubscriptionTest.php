@@ -97,6 +97,8 @@ it('verifies canonical subscription storage and conditional recovery on disposab
         $claim = $subscription->begin($captured->operationId, 'mariadb-owner', 30);
         expect($claim?->generation)->toBe(1)
             ->and($subscription->begin($captured->operationId, 'loser', 30))->toBeNull();
+        $subscription->membershipInFlight($claim);
+        expect(fn () => $subscription->membershipInFlight($claim))->not->toThrow(RuntimeException::class);
         $provisioning = $subscription->acquireSegment('main', 'mariadb-key', $captured->operationId, 'mariadb-owner', 30);
         expect($provisioning)->not->toBeNull()
             ->and($subscription->acquireSegment('main', 'mariadb-key', 'other-operation', 'loser', 30))->toBeNull();

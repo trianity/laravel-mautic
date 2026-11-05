@@ -57,6 +57,44 @@ scope and the stronger possible future design.
 
 ## Verification
 
+## 1.1.0 to 1.2.0 MariaDB subscription upgrade — 2026-11-05
+
+Task 14 used a disposable Laravel 13.40.0 host and a dedicated MariaDB
+11.8.6 database. The host first installed the released `trianity/laravel-mautic`
+v1.1.0 from Packagist, published the identity, outbox and subscription tags, ran
+their canonical migrations, and recorded a pending legacy single-segment intent
+through `SubscriptionDelivery::record()`. Its operation IDs, semantic hash, contact
+revision, payloads, `pending` status, `recorded` stage, attempt count and null remote
+state were captured before the upgrade.
+
+The host then switched to the local 1.2 candidate with workers stopped. Publishing
+`mautic-subscription-migrations` without `--force` skipped the existing
+`2026_10_19_050000_create_mautic_subscription_delivery` file and copied only
+`2026_11_05_000000_add_mautic_subscription_membership_plans`. `migrate:status`
+reported only that forward migration pending. Repeating publication skipped both
+files and created no duplicate runnable migration. After migration, every captured
+legacy field was unchanged and the new plan-item table was empty.
+
+The first deterministic worker run exposed a MariaDB affected-row defect: a second
+membership-plan item can enter the already current `processing/membership_in_flight`
+stage within the same timestamp, for which MariaDB reports zero changed rows even
+though the generation-bound lease remains owned. A focused MariaDB regression failed
+before the correction. `DatabaseSubscriptionStore::transition()` now accepts that
+zero only after a second exact ownership and unexpired-lease check; genuinely stale
+claims still fail. The corrected host run proved the newer plan remained
+`pending/contact_ready` without transport calls until the legacy predecessor completed,
+then completed the legacy add followed by the plan's remove-then-add operations. Both
+plan items were satisfied and the deterministic final membership was the requested
+present segment only.
+
+Focused offline subscription/provider coverage passed 36 tests / 267 assertions. The
+focused MariaDB subscription check passed 1 test / 14 assertions, and the four-process
+MariaDB subscription burst passed 2 tests / 77 assertions. Final `composer check`
+passed strict Composer validation, Pint, Larastan level 8 and 340 tests / 1673 assertions
+with seven explicitly opt-in tests skipped. `git diff --check` is recorded separately
+at handoff. No live Mautic request, host business mutation, release, tag or publication
+was performed.
+
 ## 1.2.0 durable membership plans and Guzzle compatibility — 2026-11-05
 
 Task 12 adds `MembershipPlanCommand` and `SubscriptionDelivery::recordPlan()` without

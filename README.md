@@ -542,10 +542,24 @@ own workers but cannot fence unrelated external creators. The local flow is resu
 not remotely atomic or exactly once. See
 [Decision 006](docs/decisions/006-subscription-delivery.md).
 
-Upgrading from 1.1 requires publishing the updated subscription tag, running the new
-`2026_11_05_000000_add_mautic_subscription_membership_plans` migration, and only then
-restarting queue workers. The forward migration adds the plan-item table and does not edit
-or rewrite existing intent rows.
+For a 1.1 to 1.2 upgrade, stop subscription and contact-outbox workers before changing the
+installed package. Keep `recordPlan()` disabled, update the package, then publish without
+overwriting the host's existing migration:
+
+```bash
+php artisan vendor:publish --tag=mautic-subscription-migrations
+php artisan migrate:status
+php artisan migrate --force
+```
+
+The existing `2026_10_19_050000_create_mautic_subscription_delivery` file is skipped. Only
+`2026_11_05_000000_add_mautic_subscription_membership_plans` should be pending; publishing
+the tag again skips both files and must not create a second runnable create migration. The
+forward migration adds the plan-item table and does not edit or rewrite existing intent
+rows. After every application instance has the 1.2 code and the migration has completed,
+restart the queue workers and recovery pollers. Enable new `recordPlan()` call sites only
+after that restart; legacy `record()` intents may remain pending across the upgrade and are
+processed by the 1.2 worker in their original order.
 
 The opt-in `composer test:mariadb-subscription-burst` acceptance runs two 30-contact,
 four-process scenarios against only the configured disposable MariaDB test database: an

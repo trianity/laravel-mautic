@@ -19,10 +19,17 @@
 - Existing 1.1 rows are not rewritten. Run the new subscription migration before restarting
   workers; existing custom `SubscriptionTransport` implementations remain valid for legacy work.
 
+### Fixed
+
+- Treat an unchanged MariaDB subscription transition as successful only when the same
+  generation-bound, unexpired worker reservation still exists. This preserves mixed-plan
+  progress when consecutive items enter the same stage without weakening stale-worker checks.
+
 ### Upgrade
 
 - Publish `mautic-subscription-migrations`, run migrations, then restart queue workers.
-  Hosts opt into plans through `SubscriptionDelivery::recordPlan()` and must supply a
+  Keep `recordPlan()` disabled until every instance runs 1.2 and the forward migration has
+  completed. Hosts opt into plans through `SubscriptionDelivery::recordPlan()` and must supply a
   `MembershipPlanTransport` only when replacing the default manager transport.
 
 ## 1.1.0 - 2026-10-24

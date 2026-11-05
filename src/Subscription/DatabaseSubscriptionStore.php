@@ -869,9 +869,12 @@ final readonly class DatabaseSubscriptionStore
     private function transition(SubscriptionClaim $claim, array $values): void
     {
         $values['updated_at'] = $this->timestamp();
-        if ($this->owned($claim)->update($values) !== 1) {
-            throw new RuntimeException('The subscription delivery reservation was lost.');
+        $updated = $this->owned($claim)->update($values);
+        if ($updated === 1 || ($updated === 0 && $this->owned($claim)->exists())) {
+            return;
         }
+
+        throw new RuntimeException('The subscription delivery reservation was lost.');
     }
 
     private function exactProvisioning(
