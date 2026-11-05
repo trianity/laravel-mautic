@@ -31,6 +31,9 @@
   Keep `recordPlan()` disabled until every instance runs 1.2 and the forward migration has
   completed. Hosts opt into plans through `SubscriptionDelivery::recordPlan()` and must supply a
   `MembershipPlanTransport` only when replacing the default manager transport.
+- Stop or fully drain 1.1 subscription and contact-outbox workers before deploying 1.2. Do not
+  let old workers overlap the package update or migration; follow `docs/UPGRADING.md` for the
+  supported order and rollback boundary.
 
 ## 1.1.0 - 2026-10-24
 

@@ -57,6 +57,37 @@ scope and the stronger possible future design.
 
 ## Verification
 
+## 1.2.0 release candidate handoff — 2026-11-05
+
+Task 16 reviewed the complete `v1.1.0..822ec87` change set and found no unresolved release
+blocker. The legacy `SubscriptionDelivery::record()` and `SubscriptionTransport` signatures
+remain unchanged, existing intent rows are not rewritten, and an added regression proves
+that a host transport implementing only the 1.1 contract still completes legacy work. The
+same transport blocks plan work explicitly with `membership_plan_transport_unavailable`
+instead of reporting success.
+
+The README, changelog and new `docs/UPGRADING.md` now require old subscription/contact-outbox
+workers to stop or drain before deployment, require the forward migration before any
+`recordPlan()` write, and require all 1.2 workers to restart before plan enablement. English
+GitHub release notes in `docs/releases/1.2.0.md` separate verified behavior from unrun checks.
+Guzzle remains `^7.9`; no experimental SDK override is included.
+
+The final local `composer check` passed strict Composer validation, Pint, Larastan level 8
+and 341 tests / 1674 assertions with seven explicitly opt-in tests skipped. The focused
+legacy custom-transport regression passed 1 test / 6 assertions. `git diff --check` passed.
+GitHub Actions run 42110131815 for runtime commit `822ec87` passed all four PHP 8.4/8.5,
+Laravel 12/13, Pest 4/5 and Guzzle 7 test jobs through `composer test`, plus the separate
+Pint/Larastan job. The final handoff documentation, archive rules and regression were not
+committed or pushed, so that exact final worktree has no remote CI run yet.
+
+An isolated temporary Git snapshot produced
+`build/trianity-laravel-mautic-1.2.0.zip` (263 entries, 236 KiB, SHA-256
+`b23e08e3a2de300946cb030b2e9fd97e7239877e763ee978fe5bb6673e52b9d4`). `unzip -t`
+passed. The archive contains the forward migration, membership-plan runtime/contracts,
+`docs/UPGRADING.md` and the 1.2.0 release notes. It excludes tests, AI/agent/IDE files, CI,
+Composer lock data and `docs/compatibility` live evidence. No tag, release, push or
+publication was performed.
+
 ## CI Guzzle major assertion correction — 2026-11-05
 
 The four PHP/Laravel matrix jobs for commit `abeb04f` resolved Guzzle 7.16.1 but stopped

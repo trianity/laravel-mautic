@@ -17,6 +17,9 @@ use Psr\Http\Client\ClientInterface;
 use Trianity\LaravelMautic\Configuration\ConnectionConfig;
 use Trianity\LaravelMautic\Contracts\Clock;
 use Trianity\LaravelMautic\Contracts\HttpClientFactory;
+use Trianity\LaravelMautic\Contracts\StaticSegmentGateway;
+use Trianity\LaravelMautic\Contracts\SubscriptionTransport;
+use Trianity\LaravelMautic\Data\SegmentMemberships;
 use Trianity\LaravelMautic\Exceptions\SubscriptionConflict;
 use Trianity\LaravelMautic\Identity\DatabaseContactMappingRepository;
 use Trianity\LaravelMautic\Identity\LocalContactReference;
@@ -395,6 +398,64 @@ it('upgrades an existing 1.1 subscription row without rewriting its stored inten
     expect($store->get($record->operationId)?->semanticHash)->toBe($semanticHash)
         ->and($store->planItems($record->operationId))->toBe([])
         ->and(DB::connection('subscription-test')->table('mautic_subscription_intents')->count())->toBe(1);
+});
+
+it('keeps legacy custom subscription transports valid and requires an additive transport for plans', function () {
+    Queue::fake();
+    useSubscriptionResponses([
+        new Response(200, ['Content-Type' => 'application/json'], '{"list":{"id":9,"name":"Existing","alias":"existing","isPublished":true,"isGlobal":true,"filters":[]}}'),
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":0,"lists":[]}'),
+        new Response(200, ['Content-Type' => 'application/json'], '{"success":1}'),
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":1,"lists":{"9":{"id":9,"name":"Existing","alias":"existing"}}}'),
+    ]);
+    [$delivery, $store] = subscriptionServices();
+    $legacy = new SubscriptionCommand(
+        'main', new LocalContactReference('tenant:acme:contact', '42'), 'legacy-custom-transport', 1,
+        ContactFields::fromArray(['email' => 'subscriber@example.test'], ['email']),
+        SegmentTarget::existing('existing-key', 9),
+    );
+    [$legacyRecord, $planRecord] = DB::connection('subscription-test')->transaction(fn (): array => [
+        $delivery->record($legacy),
+        $delivery->recordPlan(membershipPlanCommand('plan-custom-transport', 2)),
+    ]);
+    DB::connection('subscription-test')->table('mautic_outbox_commands')
+        ->update(['status' => 'completed', 'delivery_stage' => 'remote_succeeded', 'remote_id' => 42]);
+    $mappings = new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'subscription-test');
+    $mappings->claim('main', new LocalContactReference('tenant:acme:contact', '42'), 42);
+    $managerTransport = new ManagerSubscriptionTransport(app(MauticManager::class));
+    $legacyTransport = new class($managerTransport) implements SubscriptionTransport
+    {
+        public function __construct(private ManagerSubscriptionTransport $transport) {}
+
+        public function segments(string $connection): StaticSegmentGateway
+        {
+            return $this->transport->segments($connection);
+        }
+
+        public function memberships(string $connection, int $contactId): SegmentMemberships
+        {
+            return $this->transport->memberships($connection, $contactId);
+        }
+
+        public function addMembership(string $connection, int $contactId, int $segmentId): void
+        {
+            $this->transport->addMembership($connection, $contactId, $segmentId);
+        }
+    };
+    $processor = new SubscriptionProcessor(
+        $store,
+        new DatabaseOutboxStore(DB::getFacadeRoot(), subscriptionClock(), 'subscription-test'),
+        $mappings,
+        $legacyTransport,
+    );
+
+    $processor->process($legacyRecord->operationId);
+    $processor->process($planRecord->operationId);
+
+    expect($store->get($legacyRecord->operationId)?->status)->toBe(SubscriptionStatus::Completed)
+        ->and($store->get($planRecord->operationId)?->status)->toBe(SubscriptionStatus::Blocked)
+        ->and($store->get($planRecord->operationId)?->lastErrorCode)
+        ->toBe('membership_plan_transport_unavailable');
 });
 
 it('orders membership plans with legacy deliveries by persisted contact revision', function () {

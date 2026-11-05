@@ -561,6 +561,10 @@ restart the queue workers and recovery pollers. Enable new `recordPlan()` call s
 after that restart; legacy `record()` intents may remain pending across the upgrade and are
 processed by the 1.2 worker in their original order.
 
+See the [1.2 upgrade guide](docs/UPGRADING.md) for the complete rolling-deployment boundary,
+including how to drain or stop old workers and verify the forward migration before enabling
+membership-plan writes.
+
 The opt-in `composer test:mariadb-subscription-burst` acceptance runs two 30-contact,
 four-process scenarios against only the configured disposable MariaDB test database: an
 owned static segment already exists, or one missing segment is coordinated and created.
@@ -1027,7 +1031,7 @@ tested Mautic 7.2.1 fixture omits the optional DNC `dateAdded` property advertis
 installed entity metadata; the corrected acceptance passed while preserving that state
 as Missing instead of inventing a timestamp. This observation is scoped to that version,
 endpoint and fixture. See the
-[sanitized compatibility report](docs/compatibility/mautic-7.2.1-oauth-manual-restriction-read.md).
+[sanitized compatibility report in the source repository](https://github.com/trianity/laravel-mautic/blob/v1.2.0/docs/compatibility/mautic-7.2.1-oauth-manual-restriction-read.md).
 
 `Contact`, `ContactPage` and `SegmentMemberships` are immutable package DTOs.
 `OptionalValue` distinguishes a missing property, an explicit `null`, and a present
