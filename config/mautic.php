@@ -49,6 +49,7 @@ return [
         'database_connection' => null,
         'intents_table' => 'mautic_subscription_intents',
         'segments_table' => 'mautic_subscription_segments',
+        'plan_items_table' => 'mautic_subscription_plan_items',
         'locks_table' => 'mautic_subscription_segment_locks',
         'audits_table' => 'mautic_subscription_audits',
         'queue' => null,

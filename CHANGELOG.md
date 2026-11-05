@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.2.0 - 2026-11-05
+
+### Added
+
+- Additive typed membership plans for durable present/absent requirements while preserving
+  the 1.1 single-segment API, stored intents and custom transport contract.
+- Per-item durable progress, deterministic remove-then-add execution, full-plan verification,
+  contact-revision ordering and audited observation/attestation recovery.
+- A forward subscription migration for plan items and an opt-in mixed add/remove live
+  acceptance path without changing DNC, consent, campaigns or mail.
+
+### Compatibility
+
+- Guzzle remains `^7.9`. Stable Guzzle 8 requires `guzzlehttp/psr7` 3.x, while the latest
+  stable `mautic/api-library` 4.0.0 requires `guzzlehttp/psr7:^2.4`; no unsupported SDK
+  branch or unrelated dependency change is used to advertise an unresolvable combination.
+- Existing 1.1 rows are not rewritten. Run the new subscription migration before restarting
+  workers; existing custom `SubscriptionTransport` implementations remain valid for legacy work.
+
+### Upgrade
+
+- Publish `mautic-subscription-migrations`, run migrations, then restart queue workers.
+  Hosts opt into plans through `SubscriptionDelivery::recordPlan()` and must supply a
+  `MembershipPlanTransport` only when replacing the default manager transport.
+
 ## 1.1.0 - 2026-10-24
 
 ### Added

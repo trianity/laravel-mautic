@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for Task 07J.
+Accepted for Task 07J; extended additively for 1.2.0.
 
 ## Identity and replay
 
@@ -96,3 +96,28 @@ initial target with explicit create-if-absent, using multiple processes and reco
 It is not campaign execution or a throughput guarantee. Create-if-absent never means that an
 already associated segment deleted later may be recreated automatically; that case remains
 blocked for operator repair.
+
+## 1.2 membership plans
+
+`SubscriptionDelivery::recordPlan()` captures a canonical list of explicit present and
+absent requirements beside the unchanged contact outbox command. A forward migration adds
+`mautic_subscription_plan_items`; the published 1.1 intent migration and existing rows are
+not rewritten. Per-item rows retain target identity, desired presence, resolution, write
+boundary and failure evidence that cannot be represented by the legacy intent's single
+segment fields.
+
+Every target is validated as a published static segment before membership mutation.
+Create-if-absent is allowed only for present requirements. Distinct references resolving
+to one remote segment must agree. The processor removes absences first and adds presences
+second, with stable target-key ordering. It reads after each mutation and verifies all
+requirements at the end, leaving unrelated memberships unchanged. This is deterministic,
+not remotely atomic: earlier successes remain if later work fails, and no compensating
+rollback is attempted.
+
+Plan and legacy intents use the same connection/local-contact revision order. The lowest
+unresolved intent blocks later membership work; ambiguity therefore cannot be bypassed.
+A delayed older intent observed after a newer completion is recorded as superseded rather
+than mutating remote state. Independent contact identities do not share this boundary.
+Read-only plan observation may safely retain proved items and resume remaining work.
+Replaying an uncertain item still requires audited attestation that its earlier request
+cannot complete.

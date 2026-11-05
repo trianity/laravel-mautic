@@ -90,6 +90,7 @@ function runSubscriptionBurstScenario(string $driver, string $scenario): void
     DB::purge($connection);
     $schema = DB::connection($connection)->getSchemaBuilder();
     $tables = [
+        'mautic_subscription_plan_items',
         'subscription_burst_events', 'subscription_burst_barriers', 'subscription_burst_memberships',
         'subscription_burst_remote_segments', 'subscription_burst_contacts', 'subscription_burst_control',
         'mautic_subscription_audits', 'mautic_subscription_segment_locks', 'mautic_subscription_segments',
@@ -104,6 +105,7 @@ function runSubscriptionBurstScenario(string $driver, string $scenario): void
         (require dirname(__DIR__, 2).'/database/migrations/create_mautic_contact_mappings.php.stub')->up();
         (require dirname(__DIR__, 2).'/database/migrations/create_mautic_contact_outbox.php.stub')->up();
         (require dirname(__DIR__, 2).'/database/migrations/create_mautic_subscription_delivery.php.stub')->up();
+        (require dirname(__DIR__, 2).'/database/migrations/add_mautic_subscription_membership_plans.php.stub')->up();
         $schema->create('subscription_burst_control', function (Blueprint $table): void {
             $table->string('name')->primary();
             $table->unsignedBigInteger('value');

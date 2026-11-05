@@ -174,6 +174,13 @@ event and its contact command in the host transaction. Subscription, identity an
 outbox tables must use the same Laravel database connection; queue dispatch occurs only
 after commit and is recoverable through `SubscriptionPoller`.
 
+The additive 1.2 membership-plan API stores canonical present/absent requirements as
+individual durable plan items. Legacy single-segment intents retain their published shape.
+The separate item table is required because one intent row cannot represent target-specific
+resolution, partial success or an uncertain current mutation. A separate
+`MembershipPlanTransport` extends, rather than changes, the published
+`SubscriptionTransport`; existing host implementations continue to serve legacy intents.
+
 The processor requires the contact outbox revision to complete and an active mapping to
 exist before membership. A connection/host-segment-key association identifies a remote
 segment. Existing-only targets require a verified association or remote ID;
@@ -198,6 +205,14 @@ consent and does not imply campaign entry or email delivery. Verified operator r
 bounded, identity-checked and audited; replay after uncertain membership or create work
 requires explicit attestation that the earlier request cannot still complete. See
 `docs/decisions/006-subscription-delivery.md`.
+
+All targets are resolved before membership writes. Mutations are deterministic: absent
+requirements first, then present requirements, with canonical target-key order inside each
+group. Each write is read-verified and the entire plan is verified before completion.
+Successful remote mutations are never rolled back when a later item fails. Contact revision
+and persisted intent order serialize legacy and plan membership effects for one contact;
+unresolved or ambiguous predecessors block successors, and an already completed successor
+supersedes delayed older work.
 
 The acceptance suite exercises 30 distinct durable deliveries sharing one stable segment
 key through four independent processes, actual contact outbox and subscription processors,

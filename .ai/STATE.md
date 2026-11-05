@@ -26,6 +26,8 @@
 - Durable accepted-subscription delivery with transactionally captured contact intent,
   stable replay identity, connection/key segment associations, process-coordinated
   provisioning and read-verified membership that preserves DNC.
+- Additive durable membership plans with canonical present/absent requirements, per-target
+  partial-progress evidence, remove-then-add verification and legacy/plan revision ordering.
 - Opt-in verified webhook inbox with connection-specific raw-body HMAC authentication,
   encrypted durable events, asynchronous recovery, shared contact leases and explicit
   host-owned inbound projection through mapping and field-ownership policies.
@@ -45,8 +47,8 @@ against a validated disposable Mautic 7.2.1 target; it does not verify host busi
 integration, campaign configuration or mail execution. No webhook route is automatically exposed.
 Remote deletion and generic multi-channel DNC operations are not exposed. No migration runs implicitly,
 no automatic database reset or model event exists, and no compatibility bridge for
-unreleased development schemas is provided. Version 1.0.0 is published, and the 1.1.0
-release metadata is finalized for the owner-authorized tag and Packagist publication.
+unreleased development schemas is provided. Version 1.2.0 source and release metadata are
+prepared locally; no tag, GitHub release or Packagist publication was performed by Task 12.
 
 Independent host-owned restrictions, durable restriction-command delivery and
 conditional release remain deferred. The implemented stock endpoint deliberately does
@@ -54,6 +56,37 @@ not promise ownership or an atomic revision check; Decision 005 records this acc
 scope and the stronger possible future design.
 
 ## Verification
+
+## 1.2.0 durable membership plans and Guzzle compatibility — 2026-11-05
+
+Task 12 adds `MembershipPlanCommand` and `SubscriptionDelivery::recordPlan()` without
+changing the published single-segment command or `SubscriptionTransport`. The default
+manager implements the additive `MembershipPlanTransport` for removals. A forward migration
+adds `mautic_subscription_plan_items`; an upgrade regression creates a 1.1 row before the
+new migration and proves its semantic hash and intent remain unchanged afterward.
+
+Plans canonicalize target keys, reject local and resolved remote-ID contradictions, forbid
+provisioning absent targets, resolve all static targets before membership changes, remove
+absences before adding presences, read-verify every mutation and verify the final plan.
+Per-item state retains partial success and uncertainty. Read-only operator observation can
+resume remaining items; replay still requires explicit prior-request attestation. Persisted
+contact revision and intent order block newer work behind any unresolved predecessor and
+supersede delayed older work after a newer completion.
+
+The requested stable Guzzle 8 resolution was attempted against current Packagist metadata
+and is not installable: Guzzle 8.0.0 through 8.3.1 require `guzzlehttp/psr7` 3.x, while the
+latest stable `mautic/api-library` 4.0.0 requires `guzzlehttp/psr7:^2.4`. No newer stable SDK
+exists, and Task 12 forbids switching to `dev-main`. The direct constraint therefore remains
+`^7.9`; CI explicitly selects and asserts Guzzle 7 for Laravel 12 and 13. Local verification
+used Guzzle 7.16.1. Guzzle 8 is not advertised as supported.
+
+Focused subscription coverage passed locally during implementation, including mixed
+present/absent execution, untouched unrelated membership, rollback/replay conflict, partial
+uncertainty and read-only recovery, and a 1.1 upgrade row. The opt-in disposable OAuth
+acceptance now performs mixed remove/add and proves the manual DNC entry unchanged, but it
+was not run because live mutation was not authorized. Final `composer check` passed strict
+Composer validation, Pint, Larastan level 8 and 340 tests / 1668 assertions with seven opt-in
+tests skipped. MariaDB, live OAuth and remote CI were not run.
 
 ## 1.1.0 release metadata — 2026-10-24
 

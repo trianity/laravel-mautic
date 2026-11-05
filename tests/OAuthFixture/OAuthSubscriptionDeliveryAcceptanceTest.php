@@ -6,8 +6,8 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Trianity\LaravelMautic\Contracts\Clock;
 use Trianity\LaravelMautic\Contracts\ContactSyncTransport;
+use Trianity\LaravelMautic\Contracts\MembershipPlanTransport;
 use Trianity\LaravelMautic\Contracts\StaticSegmentGateway;
-use Trianity\LaravelMautic\Contracts\SubscriptionTransport;
 use Trianity\LaravelMautic\Data\DoNotContactEntry;
 use Trianity\LaravelMautic\Data\DoNotContactReason;
 use Trianity\LaravelMautic\Data\SegmentMemberships;
@@ -25,6 +25,10 @@ use Trianity\LaravelMautic\Outbox\OutboxProcessor;
 use Trianity\LaravelMautic\Restriction\ManualEmailBlock;
 use Trianity\LaravelMautic\Segment\StaticSegmentDefinition;
 use Trianity\LaravelMautic\Subscription\DatabaseSubscriptionStore;
+use Trianity\LaravelMautic\Subscription\MembershipPlan;
+use Trianity\LaravelMautic\Subscription\MembershipPlanCommand;
+use Trianity\LaravelMautic\Subscription\MembershipPresence;
+use Trianity\LaravelMautic\Subscription\MembershipRequirement;
 use Trianity\LaravelMautic\Subscription\SegmentTarget;
 use Trianity\LaravelMautic\Subscription\SubscriptionCommand;
 use Trianity\LaravelMautic\Subscription\SubscriptionDelivery;
@@ -45,7 +49,7 @@ it('verifies durable subscription delivery through OAuth', function () {
     $configuration = OAuthFixtureConfiguration::staticSegmentFromEnvironment();
     $preparedSegmentId = $configuration->staticSegmentId
         ?? throw new RuntimeException('The prepared static segment ID is required.');
-    $budget = new OAuthAcceptanceRequestBudget(operationLimit: 34, cleanupLimit: 10);
+    $budget = new OAuthAcceptanceRequestBudget(operationLimit: 42, cleanupLimit: 10);
     $harness = new OAuthAcceptanceHarness($configuration->oauth, requestBudget: $budget);
     $connection = $harness->connection();
     (new OAuthStaticSegmentPreflight)->validate($connection->api('segments')->get($preparedSegmentId), $preparedSegmentId);
@@ -66,6 +70,7 @@ it('verifies durable subscription delivery through OAuth', function () {
     (require dirname(__DIR__, 2).'/database/migrations/create_mautic_contact_mappings.php.stub')->up();
     (require dirname(__DIR__, 2).'/database/migrations/create_mautic_contact_outbox.php.stub')->up();
     (require dirname(__DIR__, 2).'/database/migrations/create_mautic_subscription_delivery.php.stub')->up();
+    (require dirname(__DIR__, 2).'/database/migrations/add_mautic_subscription_membership_plans.php.stub')->up();
 
     Queue::fake();
     $clock = app(Clock::class);
@@ -93,7 +98,7 @@ it('verifies durable subscription delivery through OAuth', function () {
             $this->connection->contactWrites()->update($remoteId, $fields);
         }
     };
-    $subscriptionTransport = new class($connection) implements SubscriptionTransport
+    $subscriptionTransport = new class($connection) implements MembershipPlanTransport
     {
         public function __construct(private readonly MauticConnection $connection) {}
 
@@ -110,6 +115,11 @@ it('verifies durable subscription delivery through OAuth', function () {
         public function addMembership(string $connection, int $contactId, int $segmentId): void
         {
             $this->connection->contactWrites()->addToSegment($contactId, $segmentId);
+        }
+
+        public function removeMembership(string $connection, int $contactId, int $segmentId): void
+        {
+            $this->connection->contactWrites()->removeFromSegment($contactId, $segmentId);
         }
     };
     $outboxProcessor = new OutboxProcessor($outboxStore, $contactTransport, $mappings, $clock);
@@ -165,16 +175,29 @@ it('verifies durable subscription delivery through OAuth', function () {
         $replay = DB::connection('oauth-subscription')->transaction(fn () => $delivery->record($firstCommand));
         expect($replay->operationId)->toBe($first->operationId);
 
-        $createdCommand = new SubscriptionCommand(
+        $createdCommand = new MembershipPlanCommand(
             'oauth-acceptance', $local, 'created-'.$runId, 3,
             ContactFields::fromArray(['firstname' => 'SubscriptionTwo'], ['firstname']),
-            SegmentTarget::createIfAbsent('created-'.$runId, new StaticSegmentDefinition($createdName, $createdAlias)),
+            new MembershipPlan([
+                new MembershipRequirement(
+                    SegmentTarget::existing('prepared-'.$preparedSegmentId, $preparedSegmentId),
+                    MembershipPresence::Absent,
+                ),
+                new MembershipRequirement(
+                    SegmentTarget::createIfAbsent('created-'.$runId, new StaticSegmentDefinition($createdName, $createdAlias)),
+                    MembershipPresence::Present,
+                ),
+            ]),
         );
-        $created = DB::connection('oauth-subscription')->transaction(fn () => $delivery->record($createdCommand));
+        $created = DB::connection('oauth-subscription')->transaction(fn () => $delivery->recordPlan($createdCommand));
         $outboxProcessor->process($created->contactOperationId);
         $subscriptionProcessor->process($created->operationId);
         $createdRecord = $subscriptionStore->get($created->operationId);
-        $createdSegmentId = $createdRecord?->remoteSegmentId;
+        $createdSegmentId = $subscriptionStore->associatedSegment('oauth-acceptance', 'created-'.$runId);
+        $finalMembershipIds = array_map(
+            static fn ($membership): int => $membership->remoteId,
+            $connection->contactReads()->segments($remoteContactId)->memberships,
+        );
         $finalContact = $connection->contactReads()->find($remoteContactId);
         $finalRestrictions = $finalContact->doNotContact->presence === ValuePresence::Value
             ? array_values(array_filter(
@@ -184,6 +207,8 @@ it('verifies durable subscription delivery through OAuth', function () {
             )) : [];
         expect($createdRecord?->status)->toBe(SubscriptionStatus::Completed)
             ->and($createdSegmentId)->toBeInt()
+            ->and($finalMembershipIds)->toContain($createdSegmentId)
+            ->and($finalMembershipIds)->not->toContain($preparedSegmentId)
             ->and($finalContact->field('firstname')->value())->toBe('SubscriptionTwo')
             ->and($finalRestrictions)->toHaveCount(1)
             ->and($finalRestrictions[0])->toEqual($initialRestriction);
@@ -220,7 +245,7 @@ it('verifies durable subscription delivery through OAuth', function () {
         $evidence->cleanup('deleted');
     }
     $evidence->requestCounts($budget->operationAttempts(), $budget->cleanupAttempts());
-    expect($budget->operationAttempts())->toBeLessThanOrEqual(34)
+    expect($budget->operationAttempts())->toBeLessThanOrEqual(42)
         ->and($budget->cleanupAttempts())->toBeLessThanOrEqual(10);
 
     if ($failure !== null) {

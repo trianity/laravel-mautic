@@ -15,17 +15,17 @@ concurrency:
 
 jobs:
   tests:
-    name: PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }} / Pest ${{ matrix.pest }}
+    name: PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }} / Pest ${{ matrix.pest }} / Guzzle ${{ matrix.guzzle_major }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         include:
-          - {php: '8.4', laravel: '12', testbench: '10', pest: '4'}
-          - {php: '8.5', laravel: '12', testbench: '10', pest: '4'}
-          - {php: '8.4', laravel: '13', testbench: '11', pest: '5'}
-          - {php: '8.5', laravel: '13', testbench: '11', pest: '5'}
+          - {php: '8.4', laravel: '12', testbench: '10', pest: '4', guzzle: '^7.9', guzzle_major: '7'}
+          - {php: '8.5', laravel: '12', testbench: '10', pest: '4', guzzle: '^7.9', guzzle_major: '7'}
+          - {php: '8.4', laravel: '13', testbench: '11', pest: '5', guzzle: '^7.9', guzzle_major: '7'}
+          - {php: '8.5', laravel: '13', testbench: '11', pest: '5', guzzle: '^7.9', guzzle_major: '7'}
     steps:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
@@ -40,7 +40,13 @@ jobs:
           "laravel/framework:^${{ matrix.laravel }}.0"
           "orchestra/testbench:^${{ matrix.testbench }}.0"
           "pestphp/pest:^${{ matrix.pest }}.0"
+          "guzzlehttp/guzzle:${{ matrix.guzzle }}"
       - run: composer update --prefer-dist --no-interaction --no-progress
+      - name: Assert resolved Guzzle major
+        run: >-
+          php -r '$version = Composer\InstalledVersions::getPrettyVersion("guzzlehttp/guzzle");
+          fwrite(STDOUT, "Resolved guzzlehttp/guzzle {$version}\n");
+          exit(is_string($version) && str_starts_with($version, "${{ matrix.guzzle_major }}.") ? 0 : 1);'
       - run: composer validate --strict
       - run: composer test
 

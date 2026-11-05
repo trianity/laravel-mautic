@@ -5,7 +5,7 @@
 A model-independent Laravel integration built on the official `mautic/api-library`.
 MIT licensed; published as `trianity/laravel-mautic` on Packagist.
 
-**Status: 1.1.0.** Basic Auth and opt-in OAuth2
+**Status: 1.2.0.** Basic Auth and opt-in OAuth2
 connections, normalized contact reads, explicit contact writes, manual segment
 commands, explicit email-restriction commands, durable identity mappings, field ownership rules, transactional outgoing
 synchronization, a verified webhook inbox and raw upstream contexts are implemented.
@@ -43,7 +43,7 @@ for Laravel 12 development.
 Install the latest published stable release from Packagist with:
 
 ```bash
-composer require trianity/laravel-mautic:^1.1
+composer require trianity/laravel-mautic:^1.2
 php artisan vendor:publish --tag=mautic-config
 ```
 
@@ -77,8 +77,8 @@ database where the table below says so.
 | Transactional outbox | `mautic-outbox-migrations` | Identity for processing | Commands, aggregate locks, audits and connection blocks |
 | Webhook inbox | `mautic-inbox-migrations` | Identity and a host projector for processing | Deliveries, events and contact locks |
 | Reconciliation | `mautic-reconciliation-migrations` | Identity for comparison and default repair | Checkpoints, observations, findings and audits |
-| Subscription delivery | `mautic-subscription-migrations` | Identity and outbox on the same database | Intents, segment associations, locks and audits |
-| Every optional subsystem | `mautic-migrations` | Deliberately publishes all rows above | All six canonical migrations, exactly once |
+| Subscription delivery | `mautic-subscription-migrations` | Identity and outbox on the same database | Intents, membership-plan items, segment associations, locks and audits |
+| Every optional subsystem | `mautic-migrations` | Deliberately publishes all rows above | Six subsystem baselines plus the 1.2 subscription forward migration |
 
 The aggregate tag is a convenience for hosts deliberately installing every subsystem;
 it is not a prerequisite for OAuth2 alone.
@@ -471,6 +471,49 @@ with a verified remote ID when creation is forbidden, or `createIfAbsent()` with
 explicit published empty-filter definition. Existing targets are inspected but never
 silently edited or converted from dynamic to static.
 
+Version 1.2 also accepts an already resolved, config-backed membership plan without
+placing host business rules in the package. `recordPlan()` is additive; the existing
+single-segment `record()` API and stored 1.1 intents remain valid.
+
+```php
+use Trianity\LaravelMautic\Subscription\MembershipPlan;
+use Trianity\LaravelMautic\Subscription\MembershipPlanCommand;
+use Trianity\LaravelMautic\Subscription\MembershipPresence;
+use Trianity\LaravelMautic\Subscription\MembershipRequirement;
+
+$requirements = array_map(
+    static fn (array $rule): MembershipRequirement => new MembershipRequirement(
+        SegmentTarget::existing($rule['key'], $rule['remote_id']),
+        $rule['present'] ? MembershipPresence::Present : MembershipPresence::Absent,
+    ),
+    config('marketing.resolved_membership_rules'),
+);
+
+app(SubscriptionDelivery::class)->recordPlan(new MembershipPlanCommand(
+    connection: 'main',
+    localReference: new LocalContactReference('tenant:acme:contact', (string) $contact->id),
+    eventKey: 'accepted-subscription:'.$acceptedSubscription->id,
+    contactRevision: $contact->mautic_revision,
+    contactFields: $mappedFields,
+    plan: new MembershipPlan($requirements),
+    source: 'accepted-subscription',
+));
+```
+
+Plans are canonicalized before storage. Absent targets must already exist; only present
+targets may use explicit create-if-absent provisioning. The worker resolves and validates
+every target before membership writes, removes required absences first, then adds required
+presences, in stable target-key order. It reads after each mutation and verifies the whole
+plan at completion. Unrelated memberships are untouched. Remote mutations are not atomic:
+successful earlier items remain applied if a later item fails, and an uncertain current
+item blocks the plan until `observeMembershipPlan()` proves remote state or
+`authorizeMembershipPlanReplay()` records the required prior-request attestation.
+
+Plans and legacy deliveries share contact-revision ordering. The lowest unresolved revision
+blocks later membership work; a delayed older revision is superseded if a newer revision is
+already complete. This ordering is scoped to one connection/local contact, so independent
+contacts remain concurrent.
+
 Run the normal contact outbox worker/poller and the subscription job queue, and schedule
 `SubscriptionPoller::recover()` for lost dispatches. Inspect `SubscriptionRecord` for
 pending, retry-wait, completed, failed, blocked or ambiguous state. A membership GET
@@ -498,6 +541,11 @@ Mautic supplies no conditional segment-create primitive, so the package coordina
 own workers but cannot fence unrelated external creators. The local flow is resumable,
 not remotely atomic or exactly once. See
 [Decision 006](docs/decisions/006-subscription-delivery.md).
+
+Upgrading from 1.1 requires publishing the updated subscription tag, running the new
+`2026_11_05_000000_add_mautic_subscription_membership_plans` migration, and only then
+restarting queue workers. The forward migration adds the plan-item table and does not edit
+or rewrite existing intent rows.
 
 The opt-in `composer test:mariadb-subscription-burst` acceptance runs two 30-contact,
 four-process scenarios against only the configured disposable MariaDB test database: an

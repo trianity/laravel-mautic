@@ -105,6 +105,7 @@ it('blocks a second actual processor after an in-flight create lease expires', f
     (require dirname(__DIR__, 2).'/database/migrations/create_mautic_contact_mappings.php.stub')->up();
     (require dirname(__DIR__, 2).'/database/migrations/create_mautic_contact_outbox.php.stub')->up();
     (require dirname(__DIR__, 2).'/database/migrations/create_mautic_subscription_delivery.php.stub')->up();
+    (require dirname(__DIR__, 2).'/database/migrations/add_mautic_subscription_membership_plans.php.stub')->up();
     DB::connection('subscription-process')->getSchemaBuilder()->create(
         'subscription_process_control',
         function (Blueprint $table): void {
@@ -201,6 +202,7 @@ it('keeps the durable create marker blocking after the provisioning process is l
     (require dirname(__DIR__, 2).'/database/migrations/create_mautic_contact_mappings.php.stub')->up();
     (require dirname(__DIR__, 2).'/database/migrations/create_mautic_contact_outbox.php.stub')->up();
     (require dirname(__DIR__, 2).'/database/migrations/create_mautic_subscription_delivery.php.stub')->up();
+    (require dirname(__DIR__, 2).'/database/migrations/add_mautic_subscription_membership_plans.php.stub')->up();
     DB::connection('subscription-process')->getSchemaBuilder()->create(
         'subscription_process_control',
         function (Blueprint $table): void {

@@ -4,12 +4,12 @@ declare(strict_types=1);
 
 namespace Trianity\LaravelMautic\Support;
 
+use Trianity\LaravelMautic\Contracts\MembershipPlanTransport;
 use Trianity\LaravelMautic\Contracts\StaticSegmentGateway;
-use Trianity\LaravelMautic\Contracts\SubscriptionTransport;
 use Trianity\LaravelMautic\Data\SegmentMemberships;
 use Trianity\LaravelMautic\MauticManager;
 
-final readonly class ManagerSubscriptionTransport implements SubscriptionTransport
+final readonly class ManagerSubscriptionTransport implements MembershipPlanTransport
 {
     public function __construct(private MauticManager $manager) {}
 
@@ -26,5 +26,10 @@ final readonly class ManagerSubscriptionTransport implements SubscriptionTranspo
     public function addMembership(string $connection, int $contactId, int $segmentId): void
     {
         $this->manager->connection($connection)->contactWrites()->addToSegment($contactId, $segmentId);
+    }
+
+    public function removeMembership(string $connection, int $contactId, int $segmentId): void
+    {
+        $this->manager->connection($connection)->contactWrites()->removeFromSegment($contactId, $segmentId);
     }
 }

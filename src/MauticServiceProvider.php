@@ -238,6 +238,7 @@ final class MauticServiceProvider extends ServiceProvider
                 $this->subscriptionTable('segments_table', 'mautic_subscription_segments'),
                 $this->subscriptionTable('locks_table', 'mautic_subscription_segment_locks'),
                 $this->subscriptionTable('audits_table', 'mautic_subscription_audits'),
+                $this->subscriptionTable('plan_items_table', 'mautic_subscription_plan_items'),
             );
         });
         $this->app->singleton(SubscriptionDispatcher::class, function ($app): SubscriptionDispatcher {
@@ -396,6 +397,7 @@ final class MauticServiceProvider extends ServiceProvider
             $this->publishes($reconciliationMigration, 'mautic-reconciliation-migrations');
             $subscriptionMigration = [
                 __DIR__.'/../database/migrations/create_mautic_subscription_delivery.php.stub' => database_path('migrations/2026_10_19_050000_create_mautic_subscription_delivery.php'),
+                __DIR__.'/../database/migrations/add_mautic_subscription_membership_plans.php.stub' => database_path('migrations/2026_11_05_000000_add_mautic_subscription_membership_plans.php'),
             ];
             $this->publishes($subscriptionMigration, 'mautic-migrations');
             $this->publishes($subscriptionMigration, 'mautic-subscription-migrations');

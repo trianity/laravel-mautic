@@ -77,10 +77,6 @@ it('publishes canonical migrations through exact subsystem and aggregate tags', 
             'create_mautic_reconciliation.php.stub',
             '2026_10_19_040000_create_mautic_reconciliation.php',
         ],
-        'mautic-subscription-migrations' => [
-            'create_mautic_subscription_delivery.php.stub',
-            '2026_10_19_050000_create_mautic_subscription_delivery.php',
-        ],
     ];
 
     foreach ($migrations as $tag => [$source, $destination]) {
@@ -91,12 +87,21 @@ it('publishes canonical migrations through exact subsystem and aggregate tags', 
             ->and(basename((string) reset($published)))->toBe($destination);
     }
 
+    $subscription = MauticServiceProvider::pathsToPublish(MauticServiceProvider::class, 'mautic-subscription-migrations');
+    expect(array_map('basename', array_keys($subscription)))->toBe([
+        'create_mautic_subscription_delivery.php.stub',
+        'add_mautic_subscription_membership_plans.php.stub',
+    ])->and(array_map('basename', array_values($subscription)))->toBe([
+        '2026_10_19_050000_create_mautic_subscription_delivery.php',
+        '2026_11_05_000000_add_mautic_subscription_membership_plans.php',
+    ]);
+
     $aggregate = MauticServiceProvider::pathsToPublish(MauticServiceProvider::class, 'mautic-migrations');
 
-    expect($aggregate)->toHaveCount(6)
+    expect($aggregate)->toHaveCount(7)
         ->and(array_map('basename', array_keys($aggregate)))
-        ->toBe(array_column($migrations, 0))
+        ->toBe([...array_column($migrations, 0), ...array_map('basename', array_keys($subscription))])
         ->and(array_map('basename', array_values($aggregate)))
-        ->toBe(array_column($migrations, 1))
-        ->and(array_unique(array_values($aggregate)))->toHaveCount(6);
+        ->toBe([...array_column($migrations, 1), ...array_map('basename', array_values($subscription))])
+        ->and(array_unique(array_values($aggregate)))->toHaveCount(7);
 });

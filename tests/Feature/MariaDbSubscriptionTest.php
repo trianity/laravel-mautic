@@ -42,6 +42,7 @@ it('verifies canonical subscription storage and conditional recovery on disposab
     DB::purge('subscription-mariadb');
     $schema = Schema::connection('subscription-mariadb');
     $tables = [
+        'mautic_subscription_plan_items',
         'mautic_subscription_audits', 'mautic_subscription_segment_locks',
         'mautic_subscription_segments', 'mautic_subscription_intents',
         'mautic_outbox_connection_blocks', 'mautic_outbox_audits', 'mautic_outbox_locks',
@@ -55,6 +56,7 @@ it('verifies canonical subscription storage and conditional recovery on disposab
         (require dirname(__DIR__, 2).'/database/migrations/create_mautic_contact_mappings.php.stub')->up();
         (require dirname(__DIR__, 2).'/database/migrations/create_mautic_contact_outbox.php.stub')->up();
         (require dirname(__DIR__, 2).'/database/migrations/create_mautic_subscription_delivery.php.stub')->up();
+        (require dirname(__DIR__, 2).'/database/migrations/add_mautic_subscription_membership_plans.php.stub')->up();
         expect($schema->hasColumn('mautic_subscription_intents', 'lease_generation'))->toBeTrue()
             ->and($schema->hasColumn('mautic_subscription_intents', 'next_attempt_at'))->toBeTrue()
             ->and($schema->hasColumn('mautic_subscription_intents', 'membership_read_attempts'))->toBeTrue()

@@ -25,6 +25,7 @@ final readonly class DatabaseSubscriptionStore
         private string $segmentsTable = 'mautic_subscription_segments',
         private string $locksTable = 'mautic_subscription_segment_locks',
         private string $auditsTable = 'mautic_subscription_audits',
+        private string $planItemsTable = 'mautic_subscription_plan_items',
     ) {}
 
     public function requireTransaction(): void
@@ -56,6 +57,151 @@ final readonly class DatabaseSubscriptionStore
         }
 
         return new SubscriptionCapture($record, $inserted === 1);
+    }
+
+    public function recordPlan(MembershipPlanCommand $command, string $contactOperationId): SubscriptionCapture
+    {
+        $first = $command->plan->requirements[0];
+        $now = $this->timestamp();
+        $inserted = $this->database()->table($this->intentsTable)->insertOrIgnore([
+            'operation_id' => $command->operationId(), 'contact_operation_id' => $contactOperationId,
+            'connection' => $command->connection, 'connection_hash' => ContactIdentityHasher::connection($command->connection),
+            'local_scope' => $command->localReference->scope, 'local_key' => $command->localReference->key,
+            'event_key' => $command->eventKey,
+            'event_hash' => hash('sha256', $command->connection."\0".$command->localReference->scope."\0".$command->localReference->key."\0".$command->eventKey),
+            'semantic_hash' => $command->semanticHash(), 'contact_revision' => $command->contactRevision,
+            'contact_payload' => json_encode($command->contactFields->toPayload(), JSON_THROW_ON_ERROR),
+            'segment_key_hash' => self::segmentHash($command->connection, $first->target->key),
+            'segment_payload' => json_encode($first->target->payload(), JSON_THROW_ON_ERROR),
+            'status' => SubscriptionStatus::Pending->value, 'stage' => SubscriptionStage::Recorded->value,
+            'attempts' => 0, 'lease_generation' => 0, 'created_at' => $now, 'updated_at' => $now,
+        ]);
+        $record = $this->get($command->operationId());
+        if ($record === null || $record->semanticHash !== $command->semanticHash()) {
+            throw new SubscriptionConflict('The subscription event key is already associated with different intent.');
+        }
+        if ($inserted === 1) {
+            foreach ($command->plan->requirements as $position => $requirement) {
+                $this->database()->table($this->planItemsTable)->insert([
+                    'operation_id' => $record->operationId,
+                    'position' => $position,
+                    'requirement_payload' => json_encode($requirement->payload(), JSON_THROW_ON_ERROR),
+                    'status' => 'pending', 'read_attempts' => 0, 'write_attempts' => 0,
+                    'created_at' => $now, 'updated_at' => $now,
+                ]);
+            }
+        }
+
+        return new SubscriptionCapture($record, $inserted === 1);
+    }
+
+    /** @return list<MembershipPlanItem> */
+    public function planItems(string $operationId): array
+    {
+        return array_values($this->database()->table($this->planItemsTable)->where('operation_id', $operationId)
+            ->orderBy('position')->get()->map(static function (object $row): MembershipPlanItem {
+                $payload = json_decode((string) $row->requirement_payload, true, flags: JSON_THROW_ON_ERROR);
+                if (! is_array($payload)) {
+                    throw new RuntimeException('Stored membership requirement is invalid.');
+                }
+
+                return new MembershipPlanItem(
+                    (int) $row->position,
+                    MembershipRequirement::fromPayload($payload),
+                    (string) $row->status,
+                    $row->remote_segment_id === null ? null : (int) $row->remote_segment_id,
+                    (int) $row->read_attempts,
+                    (int) $row->write_attempts,
+                    $row->last_error_code === null ? null : (string) $row->last_error_code,
+                );
+            })->all());
+    }
+
+    public function resolvePlanItem(SubscriptionClaim $claim, int $position, int $remoteSegmentId): void
+    {
+        $this->assertOwned($claim);
+        $updated = $this->database()->table($this->planItemsTable)
+            ->where('operation_id', $claim->record->operationId)->where('position', $position)
+            ->whereIn('status', ['pending', 'resolved'])->update([
+                'status' => 'resolved', 'remote_segment_id' => $remoteSegmentId, 'updated_at' => $this->timestamp(),
+            ]);
+        if ($updated !== 1) {
+            throw new RuntimeException('The membership plan item could not be resolved.');
+        }
+    }
+
+    public function planItemInFlight(SubscriptionClaim $claim, MembershipPlanItem $item): void
+    {
+        $this->assertOwned($claim);
+        $updated = $this->database()->table($this->planItemsTable)
+            ->where('operation_id', $claim->record->operationId)->where('position', $item->position)
+            ->where('status', 'resolved')->update([
+                'status' => 'in_flight', 'write_attempts' => $item->writeAttempts + 1,
+                'updated_at' => $this->timestamp(),
+            ]);
+        if ($updated !== 1) {
+            throw new RuntimeException('The membership plan item could not enter its mutation boundary.');
+        }
+        $this->membershipInFlight($claim);
+    }
+
+    public function satisfyPlanItem(SubscriptionClaim $claim, int $position): void
+    {
+        $this->assertOwned($claim);
+        $updated = $this->database()->table($this->planItemsTable)
+            ->where('operation_id', $claim->record->operationId)->where('position', $position)
+            ->whereIn('status', ['resolved', 'in_flight'])->update([
+                'status' => 'satisfied', 'last_error_code' => null, 'updated_at' => $this->timestamp(),
+            ]);
+        if ($updated !== 1) {
+            throw new RuntimeException('The membership plan item could not be completed.');
+        }
+    }
+
+    public function failPlanItem(SubscriptionClaim $claim, int $position, string $status, string $code): void
+    {
+        $this->assertOwned($claim);
+        $this->database()->table($this->planItemsTable)
+            ->where('operation_id', $claim->record->operationId)->where('position', $position)
+            ->update(['status' => $status, 'last_error_code' => $code, 'updated_at' => $this->timestamp()]);
+    }
+
+    public function resetPlanItem(SubscriptionClaim $claim, int $position, string $code): void
+    {
+        $this->assertOwned($claim);
+        $this->database()->table($this->planItemsTable)
+            ->where('operation_id', $claim->record->operationId)->where('position', $position)
+            ->update(['status' => 'resolved', 'last_error_code' => $code, 'updated_at' => $this->timestamp()]);
+    }
+
+    public function hasUnresolvedPredecessor(SubscriptionRecord $record): bool
+    {
+        $currentId = $this->database()->table($this->intentsTable)->where('operation_id', $record->operationId)->value('id');
+
+        return $this->database()->table($this->intentsTable)
+            ->where('connection_hash', ContactIdentityHasher::connection($record->connection))
+            ->where('local_scope', $record->localReference->scope)->where('local_key', $record->localReference->key)
+            ->where(function (Builder $query) use ($record, $currentId): void {
+                $query->where('contact_revision', '<', $record->contactRevision)
+                    ->orWhere(function (Builder $query) use ($record, $currentId): void {
+                        $query->where('contact_revision', $record->contactRevision)->where('id', '<', $currentId);
+                    });
+            })->where('status', '!=', SubscriptionStatus::Completed->value)->exists();
+    }
+
+    public function hasCompletedSuccessor(SubscriptionRecord $record): bool
+    {
+        $currentId = $this->database()->table($this->intentsTable)->where('operation_id', $record->operationId)->value('id');
+
+        return $this->database()->table($this->intentsTable)
+            ->where('connection_hash', ContactIdentityHasher::connection($record->connection))
+            ->where('local_scope', $record->localReference->scope)->where('local_key', $record->localReference->key)
+            ->where(function (Builder $query) use ($record, $currentId): void {
+                $query->where('contact_revision', '>', $record->contactRevision)
+                    ->orWhere(function (Builder $query) use ($record, $currentId): void {
+                        $query->where('contact_revision', $record->contactRevision)->where('id', '>', $currentId);
+                    });
+            })->where('status', SubscriptionStatus::Completed->value)->exists();
     }
 
     public function get(string $operationId): ?SubscriptionRecord
@@ -263,6 +409,21 @@ final readonly class DatabaseSubscriptionStore
             'last_failure_kind' => null, 'last_error_code' => null]);
     }
 
+    public function supersede(SubscriptionClaim $claim): void
+    {
+        $this->assertOwned($claim);
+        $this->database()->transaction(function () use ($claim): void {
+            $this->database()->table($this->planItemsTable)->where('operation_id', $claim->record->operationId)
+                ->where('status', '!=', 'satisfied')->update([
+                    'status' => 'superseded', 'last_error_code' => null, 'updated_at' => $this->timestamp(),
+                ]);
+            $this->transition($claim, ['status' => SubscriptionStatus::Completed->value,
+                'stage' => SubscriptionStage::Completed->value, 'completed_at' => $this->clock->now(),
+                'lease_owner' => null, 'lease_expires_at' => null, 'next_attempt_at' => null,
+                'last_failure_kind' => null, 'last_error_code' => 'superseded_by_newer_revision']);
+        });
+    }
+
     public function stop(
         SubscriptionClaim $claim,
         SubscriptionStatus $status,
@@ -456,6 +617,51 @@ final readonly class DatabaseSubscriptionStore
         ]);
     }
 
+    /** @param array<int, true> $presentSegmentIds */
+    public function operatorObservePlan(string $operationId, array $presentSegmentIds, string $actor, string $reasonCode): void
+    {
+        $record = $this->requiredPlanRecovery($operationId);
+        $items = $this->planItems($operationId);
+        $this->database()->transaction(function () use ($record, $items, $presentSegmentIds, $actor, $reasonCode): void {
+            foreach ($items as $item) {
+                if ($item->remoteSegmentId === null) {
+                    continue;
+                }
+                $present = isset($presentSegmentIds[$item->remoteSegmentId]);
+                if (($item->requirement->presence === MembershipPresence::Present) === $present) {
+                    $this->database()->table($this->planItemsTable)
+                        ->where('operation_id', $record->operationId)->where('position', $item->position)
+                        ->update(['status' => 'satisfied', 'last_error_code' => null, 'updated_at' => $this->timestamp()]);
+                }
+            }
+            $remaining = $this->database()->table($this->planItemsTable)
+                ->where('operation_id', $record->operationId)->where('status', '!=', 'satisfied')->count();
+            $completed = $remaining === 0;
+            $this->operatorTransition($record, 'observe_membership_plan', $actor, $reasonCode, 'remote_plan_observed', [
+                'status' => $completed ? SubscriptionStatus::Completed->value : SubscriptionStatus::Pending->value,
+                'stage' => $completed ? SubscriptionStage::Completed->value : SubscriptionStage::SegmentReady->value,
+                'completed_at' => $completed ? $this->clock->now() : null,
+                'next_attempt_at' => null, 'last_failure_kind' => null, 'last_error_code' => null,
+            ], false);
+        });
+    }
+
+    public function operatorReplayPlan(string $operationId, string $actor, string $reasonCode): void
+    {
+        $record = $this->requiredPlanRecovery($operationId);
+        $this->database()->transaction(function () use ($record, $actor, $reasonCode): void {
+            $this->database()->table($this->planItemsTable)->where('operation_id', $record->operationId)
+                ->whereIn('status', ['ambiguous', 'in_flight'])->update([
+                    'status' => 'resolved', 'last_error_code' => null, 'updated_at' => $this->timestamp(),
+                ]);
+            $this->operatorTransition($record, 'authorize_membership_plan_replay', $actor, $reasonCode, 'prior_request_cannot_complete', [
+                'status' => SubscriptionStatus::Pending->value,
+                'stage' => SubscriptionStage::SegmentReady->value,
+                'next_attempt_at' => null, 'last_failure_kind' => null, 'last_error_code' => null,
+            ], false);
+        });
+    }
+
     public function operatorAssociateSegment(
         string $operationId,
         int $remoteId,
@@ -483,6 +689,45 @@ final readonly class DatabaseSubscriptionStore
                 'status' => SubscriptionStatus::Pending->value,
                 'stage' => SubscriptionStage::ContactReady->value,
                 'remote_segment_id' => $remoteId,
+                'last_error_code' => null,
+            ], false);
+        });
+    }
+
+    public function operatorAssociatePlanSegment(
+        string $operationId,
+        int $position,
+        SegmentTarget $target,
+        int $remoteId,
+        string $definitionHash,
+        string $actor,
+        string $reasonCode,
+    ): void {
+        $record = $this->requiredActionable($operationId);
+        if (! in_array($record->lastErrorCode, [
+            'segment_create_outcome_ambiguous', 'segment_create_requires_recovery',
+            'segment_provisioning_worker_lost', 'segment_key_provisioning_ambiguous',
+        ], true)) {
+            throw new RuntimeException('The membership plan is not waiting for segment-create recovery.');
+        }
+        $this->database()->transaction(function () use ($record, $position, $target, $remoteId, $definitionHash, $actor, $reasonCode): void {
+            $this->associateSegment($record->connection, $target->key, $remoteId, $definitionHash);
+            $deleted = $this->database()->table($this->locksTable)
+                ->where('segment_key_hash', self::segmentHash($record->connection, $target->key))
+                ->where('connection', $record->connection)->where('segment_key', $target->key)
+                ->whereIn('state', ['ambiguous', 'create_in_flight'])->delete();
+            if ($deleted !== 1) {
+                throw new RuntimeException('The exact unresolved plan segment marker no longer exists.');
+            }
+            $updated = $this->database()->table($this->planItemsTable)
+                ->where('operation_id', $record->operationId)->where('position', $position)
+                ->update(['status' => 'resolved', 'remote_segment_id' => $remoteId, 'last_error_code' => null, 'updated_at' => $this->timestamp()]);
+            if ($updated !== 1) {
+                throw new RuntimeException('The exact membership plan target no longer exists.');
+            }
+            $this->operatorTransition($record, 'associate_plan_segment', $actor, $reasonCode, 'remote_segment_verified', [
+                'status' => SubscriptionStatus::Pending->value,
+                'stage' => SubscriptionStage::ContactReady->value,
                 'last_error_code' => null,
             ], false);
         });
@@ -563,6 +808,20 @@ final readonly class DatabaseSubscriptionStore
                 || str_starts_with((string) $record->lastErrorCode, 'membership_verification_'));
         if ((! $definite && ! $uncertain) || $record->remoteContactId === null || $record->remoteSegmentId === null) {
             throw new RuntimeException('The subscription is not eligible for membership recovery.');
+        }
+
+        return $record;
+    }
+
+    private function requiredPlanRecovery(string $operationId): SubscriptionRecord
+    {
+        $record = $this->requiredActionable($operationId);
+        if ($record->status !== SubscriptionStatus::Ambiguous
+            || $record->stage !== SubscriptionStage::MembershipInFlight
+            || ! str_starts_with((string) $record->lastErrorCode, 'membership_')
+            || $record->remoteContactId === null
+            || $this->planItems($operationId) === []) {
+            throw new RuntimeException('The subscription is not eligible for membership-plan recovery.');
         }
 
         return $record;

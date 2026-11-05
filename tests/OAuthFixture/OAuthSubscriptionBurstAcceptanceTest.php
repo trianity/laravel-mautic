@@ -152,6 +152,7 @@ it('verifies a continuous 30-contact subscription burst through OAuth', function
     (require dirname(__DIR__, 2).'/database/migrations/create_mautic_contact_mappings.php.stub')->up();
     (require dirname(__DIR__, 2).'/database/migrations/create_mautic_contact_outbox.php.stub')->up();
     (require dirname(__DIR__, 2).'/database/migrations/create_mautic_subscription_delivery.php.stub')->up();
+    (require dirname(__DIR__, 2).'/database/migrations/add_mautic_subscription_membership_plans.php.stub')->up();
     Queue::fake();
     $mappings = new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'oauth-subscription-burst');
     $outbox = new DatabaseOutboxStore(DB::getFacadeRoot(), $clock, 'oauth-subscription-burst');

@@ -29,6 +29,10 @@ use Trianity\LaravelMautic\Outbox\DatabaseOutboxStore;
 use Trianity\LaravelMautic\Outbox\OutboxDispatcher;
 use Trianity\LaravelMautic\Segment\StaticSegmentDefinition;
 use Trianity\LaravelMautic\Subscription\DatabaseSubscriptionStore;
+use Trianity\LaravelMautic\Subscription\MembershipPlan;
+use Trianity\LaravelMautic\Subscription\MembershipPlanCommand;
+use Trianity\LaravelMautic\Subscription\MembershipPresence;
+use Trianity\LaravelMautic\Subscription\MembershipRequirement;
 use Trianity\LaravelMautic\Subscription\SegmentTarget;
 use Trianity\LaravelMautic\Subscription\SubscriptionCommand;
 use Trianity\LaravelMautic\Subscription\SubscriptionDelivery;
@@ -67,6 +71,21 @@ function subscriptionCommand(string $event = 'accepted-01', string $segmentKey =
     );
 }
 
+function membershipPlanCommand(string $event = 'plan-01', int $revision = 1): MembershipPlanCommand
+{
+    return new MembershipPlanCommand(
+        'main',
+        new LocalContactReference('tenant:acme:contact', '42'),
+        $event,
+        $revision,
+        ContactFields::fromArray(['email' => 'subscriber@example.test'], ['email']),
+        new MembershipPlan([
+            new MembershipRequirement(SegmentTarget::existing('remove-news', 9), MembershipPresence::Absent),
+            new MembershipRequirement(SegmentTarget::existing('add-customer', 10), MembershipPresence::Present),
+        ]),
+    );
+}
+
 beforeEach(function () {
     config()->set('database.default', 'subscription-test');
     config()->set('database.connections.subscription-test', [
@@ -84,6 +103,7 @@ beforeEach(function () {
     (require database_path('migrations/2026_10_19_010000_create_mautic_contact_mappings.php'))->up();
     (require database_path('migrations/2026_10_19_020000_create_mautic_contact_outbox.php'))->up();
     (require database_path('migrations/2026_10_19_050000_create_mautic_subscription_delivery.php'))->up();
+    (require database_path('migrations/2026_11_05_000000_add_mautic_subscription_membership_plans.php'))->up();
 });
 
 function subscriptionServices(): array
@@ -137,17 +157,18 @@ function makeSubscriptionContactReady(SubscriptionDelivery $delivery, string $ev
     return $record->operationId;
 }
 
-it('publishes one canonical reversible subscription migration', function () {
+it('publishes the canonical subscription migration and additive membership-plan upgrade', function () {
     $published = MauticServiceProvider::pathsToPublish(MauticServiceProvider::class, 'mautic-subscription-migrations');
     $schema = Schema::connection('subscription-test');
 
-    expect($published)->toHaveCount(1)
+    expect($published)->toHaveCount(2)
         ->and(array_key_first($published))->toEndWith('create_mautic_subscription_delivery.php.stub')
         ->and($schema->hasTable('mautic_subscription_intents'))->toBeTrue()
         ->and($schema->hasTable('mautic_subscription_segments'))->toBeTrue()
         ->and($schema->hasTable('mautic_subscription_segment_locks'))->toBeTrue()
         ->and($schema->hasTable('mautic_subscription_audits'))->toBeTrue()
-        ->and($schema->hasColumn('mautic_subscription_intents', 'lease_generation'))->toBeTrue();
+        ->and($schema->hasColumn('mautic_subscription_intents', 'lease_generation'))->toBeTrue()
+        ->and($schema->hasTable('mautic_subscription_plan_items'))->toBeTrue();
 });
 
 it('requires the host transaction and rolls both contact and delivery intent back', function () {
@@ -211,6 +232,206 @@ it('deduplicates an identical event and rejects conflicting semantic reuse', fun
     expect(fn () => DB::connection('subscription-test')->transaction(
         fn () => $delivery->record(subscriptionCommand(segmentKey: 'different-segment')),
     ))->toThrow(SubscriptionConflict::class);
+});
+
+it('records a canonical membership plan atomically and conflicts on changed replay', function () {
+    Queue::fake();
+    [$delivery] = subscriptionServices();
+
+    expect(fn () => $delivery->recordPlan(membershipPlanCommand()))->toThrow(RuntimeException::class);
+    try {
+        DB::connection('subscription-test')->transaction(function () use ($delivery): void {
+            $delivery->recordPlan(membershipPlanCommand());
+            throw new RuntimeException('rollback');
+        });
+    } catch (RuntimeException) {
+    }
+    expect(DB::connection('subscription-test')->table('mautic_subscription_intents')->count())->toBe(0)
+        ->and(DB::connection('subscription-test')->table('mautic_subscription_plan_items')->count())->toBe(0)
+        ->and(DB::connection('subscription-test')->table('mautic_outbox_commands')->count())->toBe(0);
+
+    DB::connection('subscription-test')->transaction(function () use ($delivery): void {
+        $first = $delivery->recordPlan(membershipPlanCommand());
+        $second = $delivery->recordPlan(membershipPlanCommand());
+        expect($second->operationId)->toBe($first->operationId);
+    });
+    expect(DB::connection('subscription-test')->table('mautic_subscription_intents')->count())->toBe(1)
+        ->and(DB::connection('subscription-test')->table('mautic_subscription_plan_items')->count())->toBe(2)
+        ->and(DB::connection('subscription-test')->table('mautic_outbox_commands')->count())->toBe(1);
+
+    $changed = new MembershipPlanCommand(
+        'main', new LocalContactReference('tenant:acme:contact', '42'), 'plan-01', 1,
+        ContactFields::fromArray(['email' => 'subscriber@example.test'], ['email']),
+        new MembershipPlan([
+            new MembershipRequirement(SegmentTarget::existing('remove-news', 9), MembershipPresence::Present),
+        ]),
+    );
+    expect(fn () => DB::connection('subscription-test')->transaction(
+        fn () => $delivery->recordPlan($changed),
+    ))->toThrow(SubscriptionConflict::class);
+});
+
+it('rejects contradictory canonical plans and provisioning absent targets', function () {
+    expect(fn () => new MembershipPlan([
+        new MembershipRequirement(SegmentTarget::existing('one', 9), MembershipPresence::Present),
+        new MembershipRequirement(SegmentTarget::existing('two', 9), MembershipPresence::Absent),
+    ]))->toThrow(InvalidArgumentException::class)
+        ->and(fn () => new MembershipRequirement(
+            SegmentTarget::createIfAbsent('missing', new StaticSegmentDefinition('Missing', 'missing')),
+            MembershipPresence::Absent,
+        ))->toThrow(InvalidArgumentException::class);
+});
+
+it('applies a mixed plan in remove-then-add order and leaves unrelated memberships untouched', function () {
+    Queue::fake();
+    $history = [];
+    $segment = static fn (int $id, string $name, string $alias): Response => new Response(
+        200,
+        ['Content-Type' => 'application/json'],
+        json_encode(['list' => ['id' => $id, 'name' => $name, 'alias' => $alias, 'isPublished' => true, 'isGlobal' => true, 'filters' => []]], JSON_THROW_ON_ERROR),
+    );
+    $memberships = static fn (array $ids): Response => new Response(
+        200,
+        ['Content-Type' => 'application/json'],
+        json_encode(['total' => count($ids), 'lists' => array_combine($ids, array_map(
+            static fn (int $id): array => ['id' => $id, 'name' => 'Segment '.$id, 'alias' => 'segment-'.$id],
+            $ids,
+        )) ?: []], JSON_THROW_ON_ERROR),
+    );
+    useSubscriptionResponses([
+        $segment(10, 'Customer', 'customer'),
+        $segment(9, 'Newsletter', 'newsletter'),
+        $memberships([9, 77]),
+        new Response(200, ['Content-Type' => 'application/json'], '{"success":1}'),
+        $memberships([77]),
+        new Response(200, ['Content-Type' => 'application/json'], '{"success":1}'),
+        $memberships([10, 77]),
+        $memberships([10, 77]),
+    ], $history);
+    [$delivery, $store] = subscriptionServices();
+    $record = DB::connection('subscription-test')->transaction(fn () => $delivery->recordPlan(membershipPlanCommand()));
+    DB::connection('subscription-test')->table('mautic_outbox_commands')->where('operation_id', $record->contactOperationId)
+        ->update(['status' => 'completed', 'delivery_stage' => 'remote_succeeded', 'remote_id' => 42]);
+    $mappings = new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'subscription-test');
+    $mappings->claim('main', new LocalContactReference('tenant:acme:contact', '42'), 42);
+
+    (new SubscriptionProcessor(
+        $store,
+        new DatabaseOutboxStore(DB::getFacadeRoot(), subscriptionClock(), 'subscription-test'),
+        $mappings,
+        new ManagerSubscriptionTransport(app(MauticManager::class)),
+    ))->process($record->operationId);
+
+    $mutationUris = array_values(array_map(
+        static fn ($entry): string => (string) $entry['request']->getUri(),
+        array_filter($history, static fn ($entry): bool => $entry['request']->getMethod() === 'POST'),
+    ));
+    expect($store->get($record->operationId)?->status)->toBe(SubscriptionStatus::Completed)
+        ->and(array_map(static fn ($item): string => $item->status, $store->planItems($record->operationId)))
+        ->toBe(['satisfied', 'satisfied'])
+        ->and($mutationUris[0])->toEndWith('/api/segments/9/contact/42/remove')
+        ->and($mutationUris[1])->toEndWith('/api/segments/10/contact/42/add')
+        ->and(collect($history)->contains(fn ($entry): bool => str_contains((string) $entry['request']->getUri(), '/segments/77/')))->toBeFalse();
+});
+
+it('retains a partial plan after an uncertain write and resumes only from read-only observation', function () {
+    Queue::fake();
+    $history = [];
+    useSubscriptionResponses([
+        new Response(200, ['Content-Type' => 'application/json'], '{"list":{"id":10,"name":"Customer","alias":"customer","isPublished":true,"isGlobal":true,"filters":[]}}'),
+        new Response(200, ['Content-Type' => 'application/json'], '{"list":{"id":9,"name":"Newsletter","alias":"newsletter","isPublished":true,"isGlobal":true,"filters":[]}}'),
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":1,"lists":{"9":{"id":9,"name":"Newsletter","alias":"newsletter"}}}'),
+        new Response(503, ['Content-Type' => 'application/json'], '{"errors":[{"code":503,"message":"uncertain"}]}'),
+    ], $history);
+    [$delivery, $store] = subscriptionServices();
+    $record = DB::connection('subscription-test')->transaction(fn () => $delivery->recordPlan(membershipPlanCommand('partial-plan')));
+    DB::connection('subscription-test')->table('mautic_outbox_commands')->where('operation_id', $record->contactOperationId)
+        ->update(['status' => 'completed', 'delivery_stage' => 'remote_succeeded', 'remote_id' => 42]);
+    $mappings = new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'subscription-test');
+    $mappings->claim('main', new LocalContactReference('tenant:acme:contact', '42'), 42);
+    $outbox = new DatabaseOutboxStore(DB::getFacadeRoot(), subscriptionClock(), 'subscription-test');
+    $transport = new ManagerSubscriptionTransport(app(MauticManager::class));
+    $processor = new SubscriptionProcessor($store, $outbox, $mappings, $transport);
+    $processor->process($record->operationId);
+
+    expect($store->get($record->operationId)?->status)->toBe(SubscriptionStatus::Ambiguous)
+        ->and(array_map(static fn ($item): string => $item->status, $store->planItems($record->operationId)))
+        ->toBe(['resolved', 'ambiguous']);
+    $processor->process($record->operationId);
+    expect($history)->toHaveCount(4);
+
+    useSubscriptionResponses([
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":0,"lists":[]}'),
+    ]);
+    app()->forgetInstance(MauticManager::class);
+    (new SubscriptionOperator(
+        $store, new ManagerSubscriptionTransport(app(MauticManager::class)), $outbox, $mappings,
+    ))->observeMembershipPlan($record->operationId, 'operator', 'observed-remove');
+
+    useSubscriptionResponses([
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":0,"lists":[]}'),
+        new Response(200, ['Content-Type' => 'application/json'], '{"success":1}'),
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":1,"lists":{"10":{"id":10,"name":"Customer","alias":"customer"}}}'),
+        new Response(200, ['Content-Type' => 'application/json'], '{"total":1,"lists":{"10":{"id":10,"name":"Customer","alias":"customer"}}}'),
+    ]);
+    app()->forgetInstance(MauticManager::class);
+    (new SubscriptionProcessor(
+        $store, $outbox, $mappings, new ManagerSubscriptionTransport(app(MauticManager::class)),
+    ))->process($record->operationId);
+
+    expect($store->get($record->operationId)?->status)->toBe(SubscriptionStatus::Completed)
+        ->and($store->audits($record->operationId))->toHaveCount(1);
+});
+
+it('upgrades an existing 1.1 subscription row without rewriting its stored intent', function () {
+    Queue::fake();
+    $upgrade = require database_path('migrations/2026_11_05_000000_add_mautic_subscription_membership_plans.php');
+    $upgrade->down();
+    [$delivery, $store] = subscriptionServices();
+    $record = DB::connection('subscription-test')->transaction(fn () => $delivery->record(subscriptionCommand('legacy-before-upgrade')));
+    $semanticHash = $record->semanticHash;
+
+    $upgrade->up();
+    expect($store->get($record->operationId)?->semanticHash)->toBe($semanticHash)
+        ->and($store->planItems($record->operationId))->toBe([])
+        ->and(DB::connection('subscription-test')->table('mautic_subscription_intents')->count())->toBe(1);
+});
+
+it('orders membership plans with legacy deliveries by persisted contact revision', function () {
+    Queue::fake();
+    [$delivery, $store] = subscriptionServices();
+    $legacy = new SubscriptionCommand(
+        'main', new LocalContactReference('tenant:acme:contact', '42'), 'ordered-legacy', 1,
+        ContactFields::fromArray(['email' => 'subscriber@example.test'], ['email']),
+        SegmentTarget::existing('legacy-segment', 8),
+    );
+    [$older, $newer] = DB::connection('subscription-test')->transaction(fn (): array => [
+        $delivery->record($legacy),
+        $delivery->recordPlan(membershipPlanCommand('ordered-plan', 2)),
+    ]);
+    DB::connection('subscription-test')->table('mautic_outbox_commands')
+        ->update(['status' => 'completed', 'delivery_stage' => 'remote_succeeded', 'remote_id' => 42]);
+    $mappings = new DatabaseContactMappingRepository(DB::getFacadeRoot(), 'subscription-test');
+    $mappings->claim('main', new LocalContactReference('tenant:acme:contact', '42'), 42);
+    $processor = new SubscriptionProcessor(
+        $store,
+        new DatabaseOutboxStore(DB::getFacadeRoot(), subscriptionClock(), 'subscription-test'),
+        $mappings,
+        new ManagerSubscriptionTransport(app(MauticManager::class)),
+    );
+
+    $processor->process($newer->operationId);
+    expect($store->get($newer->operationId)?->status)->toBe(SubscriptionStatus::Pending)
+        ->and($store->get($newer->operationId)?->stage)->toBe(SubscriptionStage::ContactReady);
+
+    DB::connection('subscription-test')->table('mautic_subscription_intents')
+        ->where('operation_id', $newer->operationId)->update([
+            'status' => 'completed', 'stage' => 'completed', 'completed_at' => 2_000,
+        ]);
+    $processor->process($older->operationId);
+
+    expect($store->get($older->operationId)?->status)->toBe(SubscriptionStatus::Completed)
+        ->and($store->get($older->operationId)?->lastErrorCode)->toBe('superseded_by_newer_revision');
 });
 
 it('isolates persisted segment associations by connection and stable key', function () {

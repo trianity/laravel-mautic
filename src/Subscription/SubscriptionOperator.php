@@ -78,6 +78,33 @@ final readonly class SubscriptionOperator
         $this->store->operatorReplayMembership($operationId, $actor, $reasonCode);
     }
 
+    public function observeMembershipPlan(string $operationId, string $actor, string $reasonCode): void
+    {
+        $this->validateAudit($actor, $reasonCode);
+        $record = $this->required($operationId);
+        if ($record->remoteContactId === null || $this->store->planItems($operationId) === []) {
+            throw new RuntimeException('Membership plan recovery requires stored remote contact and plan identities.');
+        }
+        $present = [];
+        foreach ($this->transport->memberships($record->connection, $record->remoteContactId)->memberships as $membership) {
+            $present[$membership->remoteId] = true;
+        }
+        $this->store->operatorObservePlan($operationId, $present, $actor, $reasonCode);
+    }
+
+    public function authorizeMembershipPlanReplay(
+        string $operationId,
+        string $actor,
+        string $reasonCode,
+        bool $previousRequestCannotComplete,
+    ): void {
+        $this->validateAudit($actor, $reasonCode);
+        if (! $previousRequestCannotComplete) {
+            throw new RuntimeException('Recovery requires trusted attestation that the previous plan mutation cannot complete.');
+        }
+        $this->store->operatorReplayPlan($operationId, $actor, $reasonCode);
+    }
+
     public function associateAmbiguousCreate(
         string $operationId,
         int $remoteId,
@@ -101,6 +128,49 @@ final readonly class SubscriptionOperator
         $this->assertSuitable($record, $segment);
         $this->store->operatorAssociateSegment(
             $operationId,
+            $remoteId,
+            $this->definitionHash($segment),
+            $actor,
+            $reasonCode,
+        );
+    }
+
+    public function associateAmbiguousPlanCreate(
+        string $operationId,
+        string $segmentKey,
+        int $remoteId,
+        string $actor,
+        string $reasonCode,
+        bool $previousRequestCannotCreateAnotherSegment,
+    ): void {
+        $this->validateAudit($actor, $reasonCode);
+        if (! $previousRequestCannotCreateAnotherSegment) {
+            throw new RuntimeException('Recovery requires attestation that the previous create cannot later create another segment.');
+        }
+        $record = $this->required($operationId);
+        $item = null;
+        foreach ($this->store->planItems($operationId) as $candidate) {
+            if ($candidate->requirement->target->key === $segmentKey) {
+                $item = $candidate;
+                break;
+            }
+        }
+        if ($item === null) {
+            throw new RuntimeException('The exact membership plan target does not exist.');
+        }
+        $block = $this->store->segmentProvisioningBlock($record->connection, $segmentKey);
+        if ($block === null || ! in_array(($block->state ?? null), ['ambiguous', 'create_in_flight'], true)) {
+            throw new RuntimeException('The exact plan segment-key provisioning blocker no longer exists.');
+        }
+        if (($block->remote_id ?? null) !== null && (int) $block->remote_id !== $remoteId) {
+            throw new SegmentConflict('The supplied segment ID conflicts with retained create evidence.');
+        }
+        $segment = $this->transport->segments($record->connection)->find($remoteId);
+        $this->assertTargetSuitable($item->requirement->target, $segment);
+        $this->store->operatorAssociatePlanSegment(
+            $operationId,
+            $item->position,
+            $item->requirement->target,
             $remoteId,
             $this->definitionHash($segment),
             $actor,
@@ -136,9 +206,14 @@ final readonly class SubscriptionOperator
 
     private function assertSuitable(SubscriptionRecord $record, StaticSegment $segment): void
     {
-        $definition = $record->segment->definition;
+        $this->assertTargetSuitable($record->segment, $segment);
+    }
+
+    private function assertTargetSuitable(SegmentTarget $target, StaticSegment $segment): void
+    {
+        $definition = $target->definition;
         if (! $segment->suitable()
-            || ($record->segment->remoteId !== null && $record->segment->remoteId !== $segment->remoteId)
+            || ($target->remoteId !== null && $target->remoteId !== $segment->remoteId)
             || ($definition !== null && ($definition->name !== $segment->name
                 || $definition->alias !== $segment->alias || $definition->global !== $segment->global))) {
             throw new SegmentConflict('The verified remote segment does not match the stored subscription target.');
