@@ -138,6 +138,37 @@ not-found contract. Sanitized mode-0600 evidence records completed/deleted outco
 18/6 request counts without contact IDs, addresses or restriction comments. This remains
 Testbench plus disposable local Mautic evidence; no real host application was exercised.
 
+## Task 15 mixed-plan verification run — 2026-11-05
+
+The explicitly authorized disposable OAuth run targeted the configured local Mautic 7.2.1
+instance and used this command:
+
+```bash
+set -a
+source tests/.env
+set +a
+composer test:oauth-subscription
+```
+
+It passed 1 test / 31 assertions in 4.49 seconds. The operation phase used 24 HTTP/OAuth
+attempts from a limit of 42; ownership-checked cleanup used 12 attempts from a limit of 16.
+The run created one cryptographically named contact and three cryptographically named static
+segments. A fresh baseline read proved membership in the remove and untouched segments,
+absence from the add segment and one exact non-empty manual email restriction.
+
+`SubscriptionDelivery::recordPlan()` and the actual durable outbox/subscription processors
+then removed the first membership and added the second in that order. Fresh API reads proved
+the add present, remove absent, untouched membership retained and the complete typed manual
+DNC entry unchanged. The persisted intent and both plan items completed. Re-recording and
+processing the identical mixed event returned the same operation ID, retained one intent and
+two plan-item rows, and left the transport mutation log at exactly one remove and one add.
+
+Cleanup first re-read the exact owned email and every exact segment name/alias, then deleted
+the contact and all three segments and verified API not-found for each. Sanitized mode-0600
+evidence stores only a run hash, `completed`/`deleted` outcomes and the 24/12 request counts.
+No persistent contact, production segment, campaign, consent state or email delivery was
+used, and this remains capability-specific evidence rather than a throughput claim.
+
 ## Stock API limitations
 
 The stock API has no conditional unique-create or remote idempotency key for segments.

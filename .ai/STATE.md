@@ -57,6 +57,43 @@ scope and the stronger possible future design.
 
 ## Verification
 
+## CI Guzzle major assertion correction — 2026-11-05
+
+The four PHP/Laravel matrix jobs for commit `abeb04f` resolved Guzzle 7.16.1 but stopped
+before Pest because the standalone `php -r` assertion did not load Composer's autoloader.
+The workflow now requires `vendor/autoload.php`, accepts Composer's optional `v` prefix and
+still fails unless the resolved major matches the matrix. Guzzle was removed from the
+temporary `composer require --dev --no-update` arguments because the package runtime
+requirement already owns `guzzlehttp/guzzle:^7.9`; the resolved-version assertion remains.
+
+The exact assertion passed locally with Guzzle 7.16.1, the workflow parsed as YAML and
+`composer validate --strict` passed. The full local `composer check` for this worktree had
+already passed 340 tests / 1668 assertions with seven opt-in tests skipped. A new GitHub
+Actions run cannot be verified until the owner commits and pushes these changes; all four
+matrix jobs must reach and pass their `composer test` step on that new commit.
+
+## 1.2.0 live OAuth mixed membership delivery — 2026-11-05
+
+Task 15 ran the separately gated `composer test:oauth-subscription` suite against the
+explicitly authorized disposable local Mautic 7.2.1 target. The acceptance now creates one
+run-owned contact and three run-owned static segments, establishes an API-read baseline with
+remove and untouched memberships present, add membership absent and one exact manual email
+DNC entry, then records a mixed plan through `SubscriptionDelivery::recordPlan()` and drives
+the actual durable outbox and subscription processors.
+
+Fresh API reads proved the targeted removal and addition, retained untouched membership and
+the complete unchanged typed DNC entry. The intent and both plan items completed. Replaying
+the identical mixed event reused its operation ID and left exactly one intent, two plan-item
+rows and the original one-remove/one-add transport mutation log. Ownership-checked cleanup
+deleted the contact and all three segments and verified API not-found for each.
+
+The run passed 1 test / 31 assertions in 4.49 seconds, using 24 operation attempts from a
+42-request limit and 12 cleanup attempts from a 16-request limit. Sanitized mode-0600
+evidence contains only the run hash, `completed`/`deleted` outcomes and request counts. No
+persistent contact, production segment, campaign configuration or email delivery was used.
+Final `composer check` passed strict Composer validation, Pint, Larastan level 8 and 340
+tests / 1668 assertions with seven explicitly opt-in tests skipped.
+
 ## 1.1.0 to 1.2.0 MariaDB subscription upgrade — 2026-11-05
 
 Task 14 used a disposable Laravel 13.40.0 host and a dedicated MariaDB
